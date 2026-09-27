@@ -6,7 +6,6 @@
     <string name="title_install_distro">Install distro</string>
     <string name="title_distro_info">Distro info</string>
     <string name="title_install_methods">Install methods</string>
-    <string name="title_launcher">Launcher</string>
     <string name="title_operation_log">Operation log</string>
     <string name="title_settings">Settings</string>
     <string name="title_task_manager">Task manager</string>
@@ -23,8 +22,9 @@
     <string name="action_install_new_distro">Install new distro</string>
     <string name="action_manage">Manage</string>
     <string name="action_terminal">Terminal</string>
+    <string name="action_apps">Apps</string>
     <string name="action_run">Run</string>
-    <string name="action_run_command">Run command&#8230;</string>
+    <string name="action_run_command">Run&#8230;</string>
     <string name="action_open_drawer">Open distro list</string>
     <string name="action_stop">Stop</string>
     <string name="action_stop_all">Stop all</string>
@@ -32,13 +32,13 @@
     <string name="action_collapse">Collapse</string>
     <string name="action_expand">Expand</string>
 
-    <string name="hint_search">Search</string>
-    <string name="hint_search_apps">Search apps</string>
+    <string name="hint_search_distro">Search %1$s</string>
     <string name="hint_run_command">e.g. firefox</string>
 
     <string name="home_drawer_item_state">%1$s · %2$s</string>
+    <string name="home_intro_blurb">Run desktop Linux programs on Android. Install a distro to get started.</string>
+    <string name="home_menu_description">More options</string>
     <string name="home_state_view_log">%1$s (view log)</string>
-    <string name="home_empty_no_distros">You have no installed Linux distros, install one to get started.</string>
     <string name="install_state_installing">installing&#8230;</string>
     <string name="install_state_uninstalling">uninstalling&#8230;</string>
     <string name="install_state_ready">ready</string>
@@ -142,11 +142,9 @@
 
     <string name="launcher_loading_apps">Loading apps&#8230;</string>
     <string name="launcher_installation_not_found">Installation \'%1$s\' not found.</string>
-    <string name="launcher_installation_state_wait">Installation is %1$s &#8212; wait for it to finish.</string>
     <string name="launcher_no_launchable_apps">No launchable apps found in this rootfs.\nInstall GUI packages from a shell first.</string>
     <string name="launcher_no_matches">No matches.</string>
     <string name="launcher_hidden_count_hint">(%1$d hidden)</string>
-    <string name="launcher_menu_description">Launcher menu</string>
     <string name="launcher_menu_show_hidden">Show hidden (%1$d)</string>
     <string name="launcher_action_hide">Hide</string>
     <string name="launcher_action_unhide">Unhide</string>

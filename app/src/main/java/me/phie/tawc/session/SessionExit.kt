@@ -9,6 +9,7 @@ import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.ops.OperationsRegistry
 import me.phie.tawc.tasks.ProcessScanner
 import me.phie.tawc.terminal.TerminalSessions
+import me.phie.tawc.terminal.kill
 import kotlin.concurrent.thread
 
 /**
@@ -25,7 +26,7 @@ internal object SessionExit {
         Log.i(TAG, "Session exit requested")
         // Shells die through the normal path: the exit closes the tab
         // (or the detached client drops the entry) and releases the hold.
-        for (session in TerminalSessions.all()) session.finishIfRunning()
+        for (session in TerminalSessions.all()) session.kill()
         CompositorService.stop()
         val app = context.applicationContext
         thread(name = "tawc-session-exit", isDaemon = true) {

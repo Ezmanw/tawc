@@ -37,11 +37,11 @@ from the optional `SCROLL` extra key
 `TerminalEmulator.toggleAutoScrollDisabled`,
 `terminal-emulator/.../TerminalEmulator.java:2532`), and that key is
 not in our `EXTRA_KEYS_CONFIG`
-(`app/src/main/java/me/phie/tawc/terminal/TerminalActivity.kt:550`),
+(`app/src/main/java/me/phie/tawc/terminal/TerminalPane.kt`),
 so in TAWC there is no way to stop the snap at all.
 
-The caller is ours: `TerminalActivity.onTextChanged`
-(`TerminalActivity.kt:461`) calls the no-arg `onScreenUpdated()`, which
+The caller is ours: `TerminalPane.onTextChanged`
+(`TerminalPane.kt`) calls the no-arg `onScreenUpdated()`, which
 is `onScreenUpdated(false)`. Same for `onResume` (`:229`, so leaving and
 returning to the activity also snaps to the bottom) and `selectTab`
 (`:329`).
@@ -58,7 +58,7 @@ need private state. Everything required is public: `getTopRow()` /
 `setTopRow()` (`TerminalView.java:1053`, `:1057`), `isSelectingText()`
 (`:1374`), the `mEmulator` field (`:54`), and
 `TerminalEmulator.getScrollCounter()` (`:2520`). So wrap the call in
-`TerminalActivity` and route `onTextChanged`/`onResume` through it:
+`TerminalPane` and route `onTextChanged`/`onResume` through it:
 
 ```kotlin
 /** onScreenUpdated() that holds the viewport when scrolled back. */
@@ -112,8 +112,8 @@ bottom, the way xterm's `scrollKey` does — otherwise typing while
 scrolled up looks like a dead terminal. `TerminalView.onKeyDown`
 (`:769`), `inputCodePoint` (`:846`) and `handleKeyCode` (`:912`) are
 public, but they are called by the view/extra-keys internally, not
-only by us; simplest is `setTopRow(0)` from `TerminalActivity`'s
-`onKeyDown` (`TerminalActivity.kt:418`) and `onCodePoint` (`:450`)
+only by us; simplest is `setTopRow(0)` from `TerminalPane`'s
+`onKeyDown` (`TerminalPane.kt`) and `onCodePoint` (`:450`)
 client callbacks, plus `onPasteTextFromClipboard` (`:479`). The
 extra-keys row is covered too: `TerminalExtraKeys` feeds buttons
 through `TerminalView.onKeyDown`/`inputCodePoint`, which consult the

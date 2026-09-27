@@ -316,7 +316,7 @@ object NativeBridge {
      * de-duplicated by id, NoDisplay/Hidden filtered out). Empty `[]` if
      * the rootfs has no apps or doesn't exist. The work is pure file I/O
      * with no compositor-state interaction, so this is safe to call from
-     * any thread (LauncherActivity dispatches it on Dispatchers.IO).
+     * any thread (AppsPane dispatches it on Dispatchers.IO).
      */
     external fun nativeLauncherScan(rootfs: String): String
 

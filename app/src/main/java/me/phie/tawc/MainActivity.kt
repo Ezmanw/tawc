@@ -1,99 +1,176 @@
 package me.phie.tawc
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.content.res.ColorStateList
+import android.content.res.Configuration
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
-import android.util.TypedValue
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.Menu
 import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import com.google.android.material.button.MaterialButton
+import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import me.phie.tawc.install.DistroInfoActivity
+import me.phie.tawc.install.DistroInfoView
 import me.phie.tawc.install.InstallActivity
 import me.phie.tawc.install.Installation
+import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.install.showRunCommandDialog
-import me.phie.tawc.launcher.LauncherActivity
-import me.phie.tawc.ops.LogScreenActivity
-import me.phie.tawc.terminal.TerminalActivity
+import me.phie.tawc.launcher.AppsPane
 import me.phie.tawc.tasks.TaskManagerActivity
+import me.phie.tawc.terminal.TerminalPane
+import me.phie.tawc.terminal.TerminalSessions
 import me.phie.tawc.ui.DrawerScreen
 import me.phie.tawc.ui.buildDrawerScreen
 import me.phie.tawc.ui.fabLp
+import me.phie.tawc.ui.paneTopRowHeightPx
+import me.phie.tawc.ui.plainIconButton
+import me.phie.tawc.ui.tawcButtonSizePx
 import me.phie.tawc.ui.tawcFab
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
 /**
- * Home screen. Shows the one open distro ([OpenDistro]) — label,
- * state, and a search stub into [LauncherActivity] — with a Terminal
- * FAB. The drawer switches the open distro and starts a new install;
- * ⋮ holds Distro info, Run command, Task manager and Settings. The compositor starts lazily when a user
- * launches a rootfs command, so a broken graphics backend doesn't keep
- * the home screen or Settings from opening.
+ * Home screen: one pane for the open distro ([OpenDistro]) —
+ *
+ * - intro with nothing installed,
+ * - distro info ([DistroInfoView]) while it isn't READY,
+ * - the terminal ([TerminalPane]) or the app list ([AppsPane]) once it
+ *   is, per [Settings.homePane], with a FAB toggling between them.
+ *
+ * Each pane supplies its own top row (≡, title or tabs or search, ⋮);
+ * the drawer switches the open distro and starts a new install. The ⋮
+ * popup is assembled here from per-distro, pane and app items. The
+ * compositor starts lazily when a user launches a rootfs command, so a
+ * broken graphics backend doesn't keep the home screen from opening.
+ * See notes/android.md "Home screen".
  */
 class MainActivity : AppCompatActivity() {
 
     private val store by lazy { InstallationStore(this) }
-    private val gap by lazy { (8 * resources.displayMetrics.density).toInt() }
     private val pad by lazy { (16 * resources.displayMetrics.density).toInt() }
 
     private lateinit var screen: DrawerScreen
-    private lateinit var listContainer: LinearLayout
-    private lateinit var installButton: MaterialButton
     private lateinit var fab: FloatingActionButton
 
-    /** Current open distro, as last rendered; menu/FAB actions read it. */
+    /** Open distro as last rendered; menu/FAB actions read it. */
     private var open: Installation? = null
+
+    private var pane: Pane? = null
 
     /** Drawer item id → install id, rebuilt on every [refresh]. */
     private val drawerIds = mutableMapOf<Int, String>()
+
+    /** Request the IME for the next pane built (cold start, FAB, switch). */
+    private var keyboardOnShow = false
+
+    /** Install whose terminal a command launch forced up, regardless
+     *  of [Settings.homePane]; cleared by any explicit pane choice. */
+    private var commandTerminalFor: String? = null
+
+    /** A `Terminal=true` launch waiting for its pane. */
+    private var pendingCommand: Pair<String, TerminalPane.CommandTab>? = null
+
+    private var defaultLightBars = true
+
+    private val editEntry = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) (pane as? Pane.Apps)?.apps?.rescan()
+    }
+
+    private sealed interface Pane {
+        val installId: String?
+        val view: View
+
+        class Intro(override val view: View) : Pane {
+            override val installId: String? = null
+        }
+
+        class Info(override val installId: String, override val view: View, val info: DistroInfoView) : Pane
+
+        class Terminal(override val installId: String, val terminal: TerminalPane) : Pane {
+            override val view: View get() = terminal.view
+        }
+
+        class Apps(override val installId: String, val apps: AppsPane) : Pane {
+            override val view: View get() = apps.view
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         requestNotificationPermissionIfNeeded()
 
-        screen = buildDrawerScreen(getString(R.string.app_name))
-        val content = screen.scaffold.content
+        // Registered before the drawer's own callback so an open drawer
+        // (added later, so consulted first) still closes on Back.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (open != null) {
+                    // Shells and the app list stay as they are.
+                    moveTaskToBack(true)
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
 
-        listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(listContainer, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = gap))
+        screen = buildDrawerScreen()
+        screen.drawer.addDrawerListener(object : DrawerLayout.SimpleDrawerListener() {
+            // Terminal counts change without a refresh (a shell got
+            // input or exited); re-read them as the drawer starts opening.
+            override fun onDrawerStateChanged(newState: Int) {
+                if (newState != DrawerLayout.STATE_IDLE && !screen.drawer.isDrawerOpen(screen.nav)) {
+                    rebuildDrawerMenu(store.list(), open)
+                }
+            }
 
-        // Empty state only; with an install, the drawer carries this.
-        installButton = tonalButton(getString(R.string.action_install_new_distro)) { openInstall() }
-        installButton.backgroundTintList = ColorStateList.valueOf(getColor(R.color.tawc_accent))
-        content.addView(installButton, verticalLp(MATCH_PARENT, WRAP_CONTENT))
+            override fun onDrawerOpened(drawerView: View) {
+                getSystemService(InputMethodManager::class.java)
+                    ?.hideSoftInputFromWindow(screen.drawer.windowToken, 0)
+            }
+        })
+        defaultLightBars = WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars
 
-        fab = tawcFab(R.drawable.ic_terminal, getString(R.string.action_terminal)) {
-            open?.let { openTerminal(it) }
-        }
+        fab = tawcFab(R.drawable.ic_terminal, getString(R.string.action_terminal)) { onFabClicked() }
         screen.body.addView(fab, fabLp())
 
-        buildOverflowMenu()
         screen.nav.addHeaderView(buildDrawerHeader())
         screen.nav.setNavigationItemSelectedListener { item ->
             val id = drawerIds[item.itemId]
             if (id != null) {
-                OpenDistro.set(id)
-                refresh()
+                if (id != open?.id) {
+                    OpenDistro.set(id)
+                    commandTerminalFor = null
+                    keyboardOnShow = true
+                    refresh()
+                }
             } else if (item.itemId == DRAWER_INSTALL) {
                 openInstall()
             }
@@ -102,11 +179,42 @@ class MainActivity : AppCompatActivity() {
         }
 
         setContentView(screen.drawer)
+
+        // A command launch (EntryLauncher) arrives as extras. Consumed
+        // so same-process recreation doesn't respawn it — but
+        // removeExtra can't reach the system's stored copy of the
+        // task's base intent, which is redelivered pristine when the
+        // task is reopened after process death. savedInstanceState
+        // survives process death, so its presence means "restore, don't
+        // re-run the command".
+        if (savedInstanceState == null) {
+            keyboardOnShow = true
+            consumeCommand(intent)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (consumeCommand(intent)) refresh()
     }
 
     override fun onResume() {
         super.onResume()
         refresh()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        (pane as? Pane.Info)?.info?.stop()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Recreation reattaches the pending shell; any other destroy
+        // (finish, recents swipe) kills it. In-use shells always stay —
+        // the notification's Exit is their kill switch.
+        tearDown(keepPending = isChangingConfigurations)
     }
 
     // On API 33+ foreground-service notifications (install progress, the
@@ -119,58 +227,277 @@ class MainActivity : AppCompatActivity() {
         ActivityCompat.requestPermissions(this, arrayOf(perm), REQUEST_NOTIFICATIONS)
     }
 
+    // ---- panes -------------------------------------------------------------
+
+    private enum class Kind { INTRO, INFO, TERMINAL, APPS }
+
+    /** Re-read installs and show the right pane; same pane → just resume it. */
     private fun refresh() {
         val installations = store.list()
         val inst = OpenDistro.resolve(installations)
         open = inst
 
-        listContainer.removeAllViews()
-        if (inst == null) {
-            listContainer.addView(TextView(this).apply {
-                text = getString(R.string.home_empty_no_distros)
-                textSize = 16f
-                alpha = 0.75f
-                gravity = Gravity.CENTER_HORIZONTAL
-            }, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = gap))
-        } else {
-            listContainer.addView(buildDistroView(inst), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = gap))
+        val command = pendingCommand?.takeIf { (id, _) -> id == inst?.id && terminalMethod(inst) != null }
+        pendingCommand = null
+        if (command != null) commandTerminalFor = command.first
+
+        val kind = when {
+            inst == null -> Kind.INTRO
+            inst.state != Installation.State.READY -> Kind.INFO
+            terminalMethod(inst) != null &&
+                (Settings.homePane == HomePane.TERMINAL || commandTerminalFor == inst.id) -> Kind.TERMINAL
+            else -> Kind.APPS
         }
-        installButton.visibility = if (inst == null) View.VISIBLE else View.GONE
-
-        // Terminal needs a runnable rootfs and the tawcroot spawn path
-        // (chroot needs su, proot is dev-only — see TerminalActivity).
-        val terminalOk = inst != null && inst.state == Installation.State.READY &&
-            inst.method == TawcrootMethod.KEY
-        fab.visibility = if (terminalOk) View.VISIBLE else View.GONE
-        screen.scaffold.toolbar.menu.findItem(MENU_INFO)?.isVisible = inst != null
-        screen.scaffold.toolbar.menu.findItem(MENU_RUN)?.isVisible =
-            inst?.state == Installation.State.READY
-
+        val current = pane
+        val same = current != null && current.installId == inst?.id && kindOf(current) == kind
+        if (same) {
+            when (current) {
+                is Pane.Info -> current.info.render(inst!!)
+                is Pane.Apps -> current.apps.onResume()
+                is Pane.Terminal -> {
+                    current.terminal.onResume()
+                    command?.let { current.terminal.openCommandTab(it.second) }
+                }
+                is Pane.Intro -> Unit
+            }
+        } else {
+            tearDown(keepPending = false)
+            val next = buildPane(kind, inst, command?.second)
+            pane = next
+            screen.body.addView(next.view, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            if (keyboardOnShow) {
+                when (next) {
+                    is Pane.Terminal -> next.terminal.showSoftKeyboard()
+                    is Pane.Apps -> next.apps.showSoftKeyboard()
+                    else -> Unit
+                }
+            }
+        }
+        keyboardOnShow = false
+        styleForPane()
+        updateFab()
         rebuildDrawerMenu(installations, inst)
     }
 
-    private fun buildOverflowMenu() {
-        val toolbar = screen.scaffold.toolbar
-        toolbar.menu.add(Menu.NONE, MENU_INFO, 0, R.string.title_distro_info)
-        toolbar.menu.add(Menu.NONE, MENU_RUN, 0, R.string.action_run_command)
-        toolbar.menu.add(Menu.NONE, MENU_TASKS, 1, R.string.title_task_manager)
-        toolbar.menu.add(Menu.NONE, MENU_SETTINGS, 2, R.string.title_settings)
-        toolbar.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                MENU_INFO -> open?.let {
-                    startActivity(
-                        Intent(this, DistroInfoActivity::class.java)
-                            .putExtra(DistroInfoActivity.EXTRA_ID, it.id)
-                    )
-                }
-                MENU_RUN -> open?.let { showRunCommandDialog(it) }
-                MENU_TASKS -> startActivity(Intent(this, TaskManagerActivity::class.java))
-                MENU_SETTINGS -> startActivity(Intent(this, SettingsActivity::class.java))
-                else -> return@setOnMenuItemClickListener false
+    private fun kindOf(p: Pane): Kind = when (p) {
+        is Pane.Intro -> Kind.INTRO
+        is Pane.Info -> Kind.INFO
+        is Pane.Terminal -> Kind.TERMINAL
+        is Pane.Apps -> Kind.APPS
+    }
+
+    private fun buildPane(kind: Kind, inst: Installation?, command: TerminalPane.CommandTab?): Pane =
+        when (kind) {
+            Kind.INTRO -> Pane.Intro(buildIntro())
+            Kind.INFO -> buildInfo(inst!!)
+            Kind.TERMINAL -> {
+                val terminal = TerminalPane(
+                    this, inst!!.id, DistroRegistry.displayLabel(inst), terminalMethod(inst)!!,
+                    object : TerminalPane.Host {
+                        override fun openDrawer() = screen.openDrawer()
+                        override fun showMenu(anchor: View) = showOverflowMenu(anchor)
+                        override fun onTerminalStateChanged() = updateFab()
+                        override fun onLastShellExited() {
+                            if (!isFinishing) finishAndRemoveTask()
+                        }
+                    },
+                )
+                terminal.attach(command)
+                Pane.Terminal(inst.id, terminal)
             }
-            true
+            Kind.APPS -> Pane.Apps(
+                inst!!.id,
+                AppsPane(this, inst, object : AppsPane.Host {
+                    override fun openDrawer() = screen.openDrawer()
+                    override fun showMenu(anchor: View) = showOverflowMenu(anchor)
+                    override fun openEditor(intent: Intent) = editEntry.launch(intent)
+                }),
+            )
+        }
+
+    private fun tearDown(keepPending: Boolean) {
+        val current = pane ?: return
+        pane = null
+        when (current) {
+            is Pane.Terminal -> current.terminal.detach(keepPending)
+            is Pane.Apps -> current.apps.destroy()
+            is Pane.Info -> current.info.stop()
+            is Pane.Intro -> Unit
+        }
+        screen.body.removeView(current.view)
+    }
+
+    /** The install's method if it can host the terminal: READY and
+     *  tawcroot (chroot spawns via su, proot is dev-only). */
+    private fun terminalMethod(inst: Installation?): TawcrootMethod? {
+        if (inst == null || inst.state != Installation.State.READY || inst.method != TawcrootMethod.KEY) return null
+        return InstallationMethod.forKey(this, inst.method) as? TawcrootMethod
+    }
+
+    /** Explicit pane choice (FAB, ⋮ Apps/Terminal). */
+    private fun choosePane(choice: HomePane) {
+        Settings.homePane = choice
+        commandTerminalFor = null
+        keyboardOnShow = true
+        refresh()
+    }
+
+    /** Terminal pane: black status/nav bands with light icons. */
+    private fun styleForPane() {
+        val dark = pane is Pane.Terminal
+        if (dark) screen.root.setBackgroundColor(Color.BLACK) else screen.root.background = null
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !dark && defaultLightBars && !night
+            isAppearanceLightNavigationBars = !dark && defaultLightBars && !night
         }
     }
+
+    // ---- FAB -----------------------------------------------------------------
+
+    private fun updateFab() {
+        val p = pane
+        when {
+            p is Pane.Apps && terminalMethod(open) != null -> {
+                fab.setImageResource(R.drawable.ic_terminal)
+                fab.contentDescription = getString(R.string.action_terminal)
+                fab.layoutParams = fabLp()
+                fab.visibility = View.VISIBLE
+            }
+            p is Pane.Terminal && p.terminal.isPending -> {
+                fab.setImageResource(R.drawable.ic_apps)
+                fab.contentDescription = getString(R.string.action_apps)
+                // Above the extra-keys row, not on it.
+                fab.layoutParams = fabLp().also { it.bottomMargin += p.terminal.extraKeysHeightPx }
+                fab.visibility = View.VISIBLE
+            }
+            else -> fab.visibility = View.GONE
+        }
+    }
+
+    private fun onFabClicked() {
+        when (pane) {
+            is Pane.Apps -> choosePane(HomePane.TERMINAL)
+            is Pane.Terminal -> choosePane(HomePane.APPS)
+            else -> Unit
+        }
+    }
+
+    // ---- ⋮ menu --------------------------------------------------------------
+
+    /** The home ⋮: per-distro, pane, then app items. */
+    private fun showOverflowMenu(anchor: View) {
+        val popup = PopupMenu(ContextThemeWrapper(this, R.style.ThemeOverlay_Tawc_Surfaces), anchor)
+        val menu = popup.menu
+        when (val p = pane) {
+            is Pane.Apps -> p.apps.addMenuItems(menu, ORDER_PANE)
+            // No FAB on an in-use terminal, so the way back lives here.
+            is Pane.Terminal -> if (!p.terminal.isPending) {
+                menu.item(ORDER_PANE, R.string.action_apps) { choosePane(HomePane.APPS) }
+            }
+            else -> Unit
+        }
+        val inst = open
+        if (inst != null) {
+            addDistroItems(menu, inst)
+        } else {
+            menu.item(ORDER_SETTINGS, R.string.title_settings) {
+                startActivity(Intent(this, SettingsActivity::class.java))
+            }
+        }
+        menu.item(ORDER_APP, R.string.title_task_manager) {
+            startActivity(Intent(this, TaskManagerActivity::class.java))
+        }
+        popup.show()
+    }
+
+    /** Settings (with [inst]'s card), Run… and Distro info for [inst]
+     *  (home ⋮ and drawer row ⋮). */
+    private fun addDistroItems(menu: Menu, inst: Installation) {
+        menu.item(ORDER_SETTINGS, R.string.title_settings) {
+            startActivity(Intent(this, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_ID, inst.id))
+        }
+        if (inst.state == Installation.State.READY) {
+            menu.item(ORDER_DISTRO, R.string.action_run_command) { showRunCommandDialog(inst) }
+        }
+        menu.item(ORDER_INFO, R.string.title_distro_info) {
+            startActivity(
+                Intent(this, DistroInfoActivity::class.java).putExtra(DistroInfoActivity.EXTRA_ID, inst.id)
+            )
+        }
+    }
+
+    private fun Menu.item(order: Int, title: Int, onClick: () -> Unit) {
+        add(Menu.NONE, Menu.NONE, order, title).setOnMenuItemClickListener { onClick(); true }
+    }
+
+    // ---- intro / info panes ------------------------------------------------
+
+    /** `[≡] <title> [⋮]`, the same height as the terminal/search rows. */
+    private fun plainTopRow(title: CharSequence): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad / 4, 0, pad / 4, 0)
+        }
+        val button = tawcButtonSizePx()
+        row.addView(
+            plainIconButton(R.drawable.ic_menu, getString(R.string.action_open_drawer)) { screen.openDrawer() },
+            LinearLayout.LayoutParams(button, button),
+        )
+        row.addView(TextView(this).apply {
+            text = title
+            textSize = 20f
+            isSingleLine = true
+            setPadding(pad / 2, 0, pad / 2, 0)
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        lateinit var menu: View
+        menu = plainIconButton(R.drawable.ic_more_vert, getString(R.string.home_menu_description), iconSizeDp = 21) {
+            showOverflowMenu(menu)
+        }
+        row.addView(menu, LinearLayout.LayoutParams(button, button))
+        return row
+    }
+
+    private fun paneColumn(title: CharSequence): Pair<LinearLayout, LinearLayout> {
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(plainTopRow(title), LinearLayout.LayoutParams(MATCH_PARENT, paneTopRowHeightPx()))
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        column.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        return column to content
+    }
+
+    private fun buildIntro(): View {
+        val (column, content) = paneColumn(getString(R.string.app_name))
+        content.gravity = Gravity.CENTER
+        val logo = (96 * resources.displayMetrics.density).toInt()
+        content.addView(ImageView(this).apply { setImageResource(R.drawable.ic_tawc_logo) },
+            LinearLayout.LayoutParams(logo, logo).also { it.bottomMargin = pad })
+        content.addView(TextView(this).apply {
+            text = getString(R.string.home_intro_blurb)
+            textSize = 16f
+            alpha = 0.75f
+            gravity = Gravity.CENTER_HORIZONTAL
+        }, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad * 3 / 2))
+        val install = tonalButton(getString(R.string.title_install_distro)) { openInstall() }
+        install.backgroundTintList = ColorStateList.valueOf(getColor(R.color.tawc_accent))
+        content.addView(install, verticalLp(WRAP_CONTENT, WRAP_CONTENT))
+        return column
+    }
+
+    private fun buildInfo(inst: Installation): Pane.Info {
+        val (column, content) = paneColumn(DistroRegistry.displayLabel(inst))
+        val info = DistroInfoView(this)
+        content.addView(info.view, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        info.render(inst)
+        return Pane.Info(inst.id, column, info)
+    }
+
+    // ---- drawer --------------------------------------------------------------
 
     private fun buildDrawerHeader(): View {
         val row = LinearLayout(this).apply {
@@ -202,115 +529,45 @@ class MainActivity : AppCompatActivity() {
         installations.forEachIndexed { i, it ->
             val itemId = DRAWER_FIRST_DISTRO + i
             drawerIds[itemId] = it.id
-            val label = DistroRegistry.displayLabel(it)
-            val title = stateLine(it.state)?.let { s -> getString(R.string.home_drawer_item_state, label, s) }
-                ?: label
+            var title = DistroRegistry.displayLabel(it)
+            stateLine(it.state)?.let { s -> title = getString(R.string.home_drawer_item_state, title, s) }
+            // Shells left running in another distro stay findable.
+            val shells = TerminalSessions.list(it.id).size
+            if (shells > 0) {
+                val count = resources.getQuantityString(R.plurals.session_terminals, shells, shells)
+                title = getString(R.string.home_drawer_item_state, title, count)
+            }
             menu.add(DRAWER_GROUP_DISTROS, itemId, i, title).apply {
                 // Also lines the labels up with Install's + icon.
                 setIcon(R.drawable.ic_linux_logo)
                 isCheckable = true
                 isChecked = it.id == inst?.id
+                actionView = drawerRowMenuButton(it)
             }
         }
         menu.setGroupCheckable(DRAWER_GROUP_DISTROS, true, true)
-        // A separate group gets NavigationView's divider above it.
-        menu.add(DRAWER_GROUP_ACTIONS, DRAWER_INSTALL, installations.size, R.string.action_install_new_distro)
+        // Same group: NavigationView draws a divider between groups.
+        // Added after setGroupCheckable, so it isn't checkable.
+        menu.add(DRAWER_GROUP_DISTROS, DRAWER_INSTALL, installations.size, R.string.action_install_new_distro)
             .setIcon(R.drawable.ic_add)
     }
 
-    /** The open distro's title lines, state and search stub, laid
-     *  straight on the page (no card: there is only ever one). */
-    private fun buildDistroView(inst: Installation): View {
-        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val title = DistroRegistry.displayLabel(inst)
-        column.addView(TextView(this).apply {
-            text = title
-            textSize = 18f
-        })
-        // Distro line under the title — dropped when the title already
-        // equals the display name (legacy records without a label).
-        val displayName = DistroRegistry.forInstallation(inst)?.displayName
-            ?: "${inst.distro.replaceFirstChar { it.titlecase() }} (${inst.arch})"
-        if (title != displayName) {
-            column.addView(TextView(this).apply {
-                text = displayName
-                textSize = 14f
-                alpha = 0.7f
-            })
+    /** Trailing ⋮ on a drawer row: [inst]'s items without switching to it. */
+    private fun drawerRowMenuButton(inst: Installation): View {
+        lateinit var button: View
+        button = plainIconButton(R.drawable.ic_more_vert, getString(R.string.home_menu_description), iconSizeDp = 21) {
+            val popup = PopupMenu(ContextThemeWrapper(this, R.style.ThemeOverlay_Tawc_Surfaces), button)
+            addDistroItems(popup.menu, inst)
+            popup.setOnMenuItemClickListener { screen.drawer.closeDrawer(screen.nav); false }
+            popup.show()
         }
-
-        // Non-READY state marker, in red so a stuck/failed install pops.
-        // Running ops have a live log; FAILED's text is on Distro info
-        // (no completed-runs history, notes/log-screen.md).
-        stateLine(inst.state)?.let { state ->
-            val op = when (inst.state) {
-                Installation.State.INSTALLING -> "install"
-                Installation.State.UNINSTALLING -> "uninstall"
-                else -> null
-            }
-            column.addView(TextView(this).apply {
-                textSize = 14f
-                setTextColor(getColor(R.color.tawc_danger))
-                if (op == null) {
-                    text = state
-                } else {
-                    text = getString(R.string.home_state_view_log, state)
-                    setBackgroundResource(selectableBackground())
-                    setOnClickListener {
-                        startActivity(LogScreenActivity.intentFor(this@MainActivity, "$op:${inst.id}"))
-                    }
-                }
-            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        }
-
-        // Search-apps stub. It looks like a search field but never
-        // holds focus — tapping it forwards into LauncherActivity,
-        // which is the real search UI. Hidden on FAILED/CORRUPT (no
-        // usable launcher) and disabled while installing/uninstalling
-        // so it returns once ready.
-        val topMargin = (8 * resources.displayMetrics.density).toInt()
-        val searchBox = EditText(this).apply {
-            hint = getString(R.string.hint_search_apps)
-            isSingleLine = true
-            isFocusable = false
-            isClickable = true
-            setTextColor(getColor(R.color.tawc_on_tonal))
-            isEnabled = inst.state == Installation.State.READY
-            setOnClickListener {
-                val i = Intent(this@MainActivity, LauncherActivity::class.java)
-                    .putExtra(LauncherActivity.EXTRA_ID, inst.id)
-                startActivity(i)
-            }
-        }
-        searchBox.visibility = if (
-            inst.state != Installation.State.FAILED &&
-            inst.state != Installation.State.CORRUPT
-        ) View.VISIBLE else View.GONE
-        column.addView(
-            searchBox,
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).also { it.topMargin = topMargin },
-        )
-
-        return column
-    }
-
-    private fun openTerminal(inst: Installation) {
-        val i = Intent(this, TerminalActivity::class.java)
-            .putExtra(TerminalActivity.EXTRA_ID, inst.id)
-            // Unique per-distro document URI — see the manifest
-            // comment on TerminalActivity.
-            .setData(Uri.parse("tawc://terminal/${inst.id}"))
-        startActivity(i)
+        val size = tawcButtonSizePx()
+        button.layoutParams = LinearLayout.LayoutParams(size, size)
+        return button
     }
 
     private fun openInstall() {
         startActivity(Intent(this, InstallActivity::class.java))
-    }
-
-    private fun selectableBackground(): Int {
-        val value = TypedValue()
-        theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true)
-        return value.resourceId
     }
 
     /** State marker; null for READY (no marker). */
@@ -323,17 +580,74 @@ class MainActivity : AppCompatActivity() {
             Installation.State.CORRUPT -> getString(R.string.install_state_corrupt)
         }
 
-    private companion object {
-        const val REQUEST_NOTIFICATIONS = 1
+    // ---- intents ---------------------------------------------------------------
 
-        const val MENU_INFO = 4
-        const val MENU_RUN = 1
-        const val MENU_TASKS = 2
-        const val MENU_SETTINGS = 3
+    /**
+     * Take a `Terminal=true` launch ([commandIntent]) off [intent]: open that distro and queue the command tab for the
+     * next [refresh]. The extras are removed so a retained intent can't
+     * respawn it. Returns whether there was one.
+     */
+    private fun consumeCommand(intent: Intent?): Boolean {
+        val exec = intent?.getStringExtra(EXTRA_COMMAND) ?: return false
+        // Other apps can start this exported activity; only the
+        // non-exported alias may carry a command.
+        if (intent.component?.className != COMMAND_ALIAS) return false
+        val id = intent.getStringExtra(EXTRA_DISTRO)
+        val label = intent.getStringExtra(EXTRA_LABEL)
+        intent.removeExtra(EXTRA_COMMAND)
+        intent.removeExtra(EXTRA_LABEL)
+        intent.removeExtra(EXTRA_DISTRO)
+        if (id == null || !Installation.isValidId(id)) return false
+        OpenDistro.set(id)
+        pendingCommand = id to TerminalPane.CommandTab(exec, label)
+        return true
+    }
 
-        const val DRAWER_GROUP_DISTROS = 1
-        const val DRAWER_GROUP_ACTIONS = 2
-        const val DRAWER_INSTALL = 1
-        const val DRAWER_FIRST_DISTRO = 100
+    // ---- debug broker hooks ------------------------------------------------
+
+    /** Debug broker `home-pane`: show [choice] for [installId] (or the
+     *  open distro) without popping the keyboard. */
+    internal fun showPaneForDev(choice: HomePane, installId: String?) {
+        if (installId != null) OpenDistro.set(installId)
+        Settings.homePane = choice
+        commandTerminalFor = null
+        refresh()
+    }
+
+    companion object {
+        /** Non-exported manifest alias command launches must target
+         *  ([commandIntent]). */
+        private const val COMMAND_ALIAS = "me.phie.tawc.CommandLaunch"
+
+        /** Open [installId]'s terminal with [exec] in a new tab named [label]. */
+        fun commandIntent(context: Context, installId: String, exec: String, label: String): Intent =
+            Intent().setClassName(context, COMMAND_ALIAS)
+                .putExtra(EXTRA_DISTRO, installId)
+                .putExtra(EXTRA_COMMAND, exec)
+                .putExtra(EXTRA_LABEL, label)
+
+        /** Install id for [EXTRA_COMMAND]. */
+        const val EXTRA_DISTRO = "distro"
+
+        /** Shell fragment to run in a new terminal tab (a launcher
+         *  entry's Exec line; same trust level as EntryLauncher's own
+         *  concatenation). */
+        const val EXTRA_COMMAND = "command"
+
+        /** Tab label for an [EXTRA_COMMAND] session (the entry name). */
+        const val EXTRA_LABEL = "label"
+
+        private const val REQUEST_NOTIFICATIONS = 1
+
+        // ⋮ order: pane items, Settings, Run…, Task manager, Distro info.
+        private const val ORDER_PANE = 0
+        private const val ORDER_SETTINGS = 1
+        private const val ORDER_DISTRO = 2
+        private const val ORDER_APP = 3
+        private const val ORDER_INFO = 4
+
+        private const val DRAWER_GROUP_DISTROS = 1
+        private const val DRAWER_INSTALL = 1
+        private const val DRAWER_FIRST_DISTRO = 100
     }
 }

@@ -26,6 +26,7 @@ object Settings {
     private const val KEY_XWAYLAND = "xwayland"
     private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
     private const val KEY_OPEN_DISTRO = "open_distro"
+    private const val KEY_HOME_PANE = "home_pane"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
@@ -40,6 +41,7 @@ object Settings {
         var xwayland: Boolean
         var gtk3BrokenMenusWorkaround: Boolean
         var openDistroId: String?
+        var homePane: HomePane
     }
 
     private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
@@ -81,6 +83,12 @@ object Settings {
             set(value) {
                 prefs.edit { if (value == null) remove(KEY_OPEN_DISTRO) else putString(KEY_OPEN_DISTRO, value) }
             }
+
+        override var homePane: HomePane
+            get() = HomePane.fromKey(prefs.getString(KEY_HOME_PANE, null))
+            set(value) {
+                prefs.edit { putString(KEY_HOME_PANE, value.key) }
+            }
     }
 
     private class TestStore : Store {
@@ -91,6 +99,7 @@ object Settings {
         @Volatile override var xwayland: Boolean = true
         @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
         @Volatile override var openDistroId: String? = null
+        @Volatile override var homePane: HomePane = HomePane.DEFAULT
     }
 
     @Volatile private var store: Store? = null
@@ -167,6 +176,14 @@ object Settings {
         get() = requireStore().openDistroId
         set(value) { requireStore().openDistroId = value }
 
+    /**
+     * Which pane a READY tawcroot distro opens on. One global value,
+     * written only by the home screen's FAB and ⋮ Apps/Terminal.
+     */
+    var homePane: HomePane
+        get() = requireStore().homePane
+        set(value) { requireStore().homePane = value }
+
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE
         val clamped = value.coerceIn(MIN_OUTPUT_SCALE, MAX_OUTPUT_SCALE)
@@ -180,6 +197,18 @@ object Settings {
 
     private fun Float.toIntWithRound(): Int =
         kotlin.math.floor(this + 0.5f).toInt()
+}
+
+/** Home screen pane for a usable distro (notes/android.md "Home screen"). */
+enum class HomePane(val key: String) {
+    TERMINAL("terminal"),
+    APPS("apps");
+
+    companion object {
+        val DEFAULT = TERMINAL
+
+        fun fromKey(key: String?): HomePane = entries.firstOrNull { it.key == key } ?: DEFAULT
+    }
 }
 
 /**

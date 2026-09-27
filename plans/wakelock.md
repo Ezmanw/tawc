@@ -9,7 +9,7 @@ The session service keeps the process alive and un-Dozed, but it does not
 keep the CPU awake. Screen off and unplugged, the SoC suspends and every
 guest stops mid-syscall; long builds stall and transfers die on
 server-side timeouts. The app has no `WAKE_LOCK` permission and takes no
-lock. Only `TerminalActivity`'s `keepScreenOn` helps, and only while the
+lock. Only `TerminalPane`'s `keepScreenOn` helps, and only while the
 terminal is the visible activity.
 
 **Not yet verified** — a USB-attached device never suspends. Step 1 below

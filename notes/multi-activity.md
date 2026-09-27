@@ -433,15 +433,14 @@ per-host counters surfaced in `nativeQueryState`.
 
 ## MainActivity role
 
-`MainActivity` becomes a thin launcher:
+`MainActivity` is the home screen: one pane for the open distro
+(terminal, app list, distro info or intro; notes/android.md "Home
+screen"). It never starts the compositor; the first rootfs client's
+connection does, and the first toplevel spawns a `CompositorActivity`.
 
-- `onCreate`: render installed rootfs cards and app-level tools.
-  Compositor startup is deferred until a user launches a rootfs command.
-- Stays the only Activity in `category.LAUNCHER` so the recents view
-  doesn't get a confusing "TAWC home" entry.
-- It does NOT host a SurfaceView; the bootstrap path goes:
-  Service starts → first chroot client connects → first toplevel arrives
-  → policy spawns first `CompositorActivity`.
+- Stays the only Activity in `category.LAUNCHER`; `singleTask`, so one
+  recents card for the app, plus one per window.
+- It does NOT host a SurfaceView.
 
 ## Single-Activity mode toggle
 

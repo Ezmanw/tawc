@@ -1,22 +1,18 @@
 package me.phie.tawc.terminal
 
-import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
-import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import com.termux.shared.termux.extrakeys.ExtraKeysConstants
 import com.termux.shared.termux.extrakeys.ExtraKeysInfo
 import com.termux.shared.termux.extrakeys.ExtraKeysView
@@ -29,128 +25,101 @@ import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import me.phie.tawc.R
 import me.phie.tawc.compositor.CompositorService
-import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.TawcrootMethod
-import me.phie.tawc.install.distro.DistroRegistry
+import me.phie.tawc.ui.paneTopRowHeightPx
 import java.io.IOException
 
 /**
- * Interactive shells into one installed rootfs, built on termux's
- * vendored terminal-emulator/terminal-view modules (Apache-2.0; see
+ * The home screen's terminal pane: interactive shells into one
+ * installed rootfs, built on termux's vendored
+ * terminal-emulator/terminal-view modules (Apache-2.0; see
  * settings.gradle.kts). The termux JNI forks the pty pair and execs
  * tawcroot as the pty child ([TawcrootMethod.ptyShellExec]), so the
- * in-rootfs bash gets a real controlling tty — readline, job control
+ * in-rootfs shell gets a real controlling tty — readline, job control
  * and curses apps work, unlike the pipe-fed RunCommandOp path. No
  * compositor involvement: the Wayland env vars are set but nothing
  * waits for the socket, so the terminal works with the graphics stack
- * cold (launching a GUI app from it requires a compositor started via
- * Run/launcher).
+ * cold.
  *
- * One terminal activity per distro, multiple shell sessions as tabs:
- * documentLaunchMode="intoExisting" plus a unique tawc://terminal/<id>
- * data URI reuse the activity instance and recents card per id (same
- * trick as CompositorActivity). The sessions and tab selection live in
- * [TerminalSessions] so reopening/recreation reattaches. A compact
- * [TerminalTabBar] replaces the scaffold toolbar; one [TerminalView]
- * shows the selected session via `attachSession` (termux-app's own
- * multi-session pattern — background sessions keep a stale pty size
- * until selected). Tab labels follow the session's xterm window title
- * (OSC 0/2; TAWC's shipped bashrc defaults set a cwd-only title —
- * see ShellDefaults); unset and `~` titles show as "Term <n>".
+ * Multiple shells show as tabs in a [TerminalTabBar]; one
+ * [TerminalView] shows the selected session via `attachSession`
+ * (termux-app's own multi-session pattern — background sessions keep a
+ * stale pty size until selected). Tab labels follow the session's
+ * xterm window title (OSC 0/2; TAWC's shipped bashrc defaults set a
+ * cwd-only title — see ShellDefaults); unset and `~` titles show as
+ * "Term <n>". Sessions live in [TerminalSessions], so recreation and
+ * distro switches reattach.
  *
- * tawcroot-only: chroot spawns via su and proot is dev-only, so the
- * home-screen Terminal button is gated on the tawcroot method.
+ * **Pending vs in use** (notes/terminal.md): with no tabs, showing the
+ * pane spawns a *pending* shell — no session hold, no notification, no
+ * tab strip (the distro label sits there), screen may sleep. The first
+ * input that reaches it ([onKeyDown] / [onCodePoint] / a paste)
+ * promotes it to an ordinary tab. A pending shell that dies (e.g. a
+ * broken `chsh`) stays on screen; a tap or Enter respawns. The tab
+ * bar has no `+` while pending.
+ *
+ * tawcroot-only: chroot spawns via su and proot is dev-only.
  */
-class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessionClient {
+internal class TerminalPane(
+    private val activity: AppCompatActivity,
+    private val distroId: String,
+    private val distroLabel: CharSequence,
+    private val method: TawcrootMethod,
+    private val host: Host,
+) : TerminalViewClient, TerminalSessionClient {
 
-    private lateinit var terminalView: TerminalView
-    private lateinit var extraKeysView: ExtraKeysView
-    private lateinit var tabBar: TerminalTabBar
-    private lateinit var store: InstallationStore
-    private lateinit var method: TawcrootMethod
+    interface Host {
+        fun openDrawer()
+        fun showMenu(anchor: View)
+        /** Pending/in-use flipped (FAB, menu). */
+        fun onTerminalStateChanged()
+        /** The last in-use shell exited. */
+        fun onLastShellExited()
+    }
+
+    private val store = InstallationStore(activity)
+    private val density = activity.resources.displayMetrics.density
+    private val terminalView: TerminalView
+    private val extraKeysView: ExtraKeysView
+    private val tabBar: TerminalTabBar
     private var activeSession: TerminalSession? = null
-    private var distroId: String = ""
-    private var fontSizePx: Int = 0
+    private var fontSizePx = (DEFAULT_FONT_SIZE_DP * density).toInt()
+    private var detached = false
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val id = intent?.getStringExtra(EXTRA_ID)
-        if (id == null) {
-            finish()
-            return
-        }
-        distroId = id
+    /** Black column: tab bar, terminal, extra keys. */
+    val view: LinearLayout
 
-        store = InstallationStore(this)
-        val installation = store.load(distroId)
-        val tawcroot = installation?.let {
-            InstallationMethod.forKey(this, it.method) as? TawcrootMethod
-        }
-        if (installation == null || tawcroot == null) {
-            Log.w(TAG, "no tawcroot installation for '$distroId'")
-            finish()
-            return
-        }
-        method = tawcroot
-        // No toolbar shows it, but the recents card and accessibility
-        // still name the screen by the activity title.
-        title = DistroRegistry.displayLabel(installation)
+    /** Height of the extra-keys row at the bottom (FAB clearance). */
+    val extraKeysHeightPx: Int
 
-        // Leaving the terminal (system back/gesture) backgrounds the
-        // task instead of finishing it: the shells keep running, the
-        // recents card stays, and — because the activity instance stays
-        // alive with the task — swiping the card later still reaches
-        // onDestroy, which kills the shells. finish() here would leave a
-        // card whose swipe the app never sees (no onTaskRemoved service;
-        // see TerminalSessions).
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                moveTaskToBack(true)
-            }
-        })
+    /** No tabs: the pane shows (or failed to spawn) the pending shell. */
+    val isPending: Boolean get() = TerminalSessions.list(distroId).isEmpty()
 
-        val density = resources.displayMetrics.density
-        // Black root so the inset padding bands (status/nav bar areas)
-        // match the always-black terminal surface.
-        val root = LinearLayout(this).apply {
+    init {
+        view = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
         }
-        // IME-inclusive insets so the keyboard resizes the terminal and
-        // the prompt stays visible above it.
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or
-                    WindowInsetsCompat.Type.displayCutout() or
-                    WindowInsetsCompat.Type.ime()
-            )
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
-        }
-
-        tabBar = TerminalTabBar(this).apply {
+        tabBar = TerminalTabBar(activity).apply {
             onTabSelected = { selectTab(it) }
             onTabCloseClicked = { closeTab(it) }
             onNewTabClicked = { openNewTab() }
+            onDrawerClicked = { host.openDrawer() }
+            onMenuClicked = { host.showMenu(it) }
         }
-        root.addView(
-            tabBar,
-            LinearLayout.LayoutParams(MATCH_PARENT, (TAB_BAR_HEIGHT_DP * density).toInt()),
-        )
+        view.addView(tabBar, LinearLayout.LayoutParams(MATCH_PARENT, activity.paneTopRowHeightPx()))
 
-        fontSizePx = (DEFAULT_FONT_SIZE_DP * density).toInt()
-        terminalView = TerminalView(this, null).apply {
-            setTerminalViewClient(this@TerminalActivity)
+        terminalView = TerminalView(activity, null).apply {
+            setTerminalViewClient(this@TerminalPane)
             setTextSize(fontSizePx)
             setBackgroundColor(Color.BLACK)
-            keepScreenOn = true
             // Key events only reach the view when it can hold focus —
             // termux sets this in XML (activity_termux.xml); the view
             // itself doesn't.
             isFocusableInTouchMode = true
         }
-        root.addView(terminalView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        view.addView(terminalView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         // Termux's extra-keys row (ESC/arrows/CTRL/...) between the
         // terminal and the IME. Same default layout and per-row height
@@ -161,111 +130,121 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
             EXTRA_KEYS_CONFIG, EXTRA_KEYS_STYLE, ExtraKeysConstants.CONTROL_CHARS_ALIASES,
         )
         val rowHeightPx = EXTRA_KEYS_ROW_HEIGHT_DP * density
-        extraKeysView = ExtraKeysView(this, null).apply {
+        extraKeysView = ExtraKeysView(activity, null).apply {
             setExtraKeysViewClient(TerminalExtraKeys(terminalView))
             setBackgroundColor(Color.BLACK)
         }
-        root.addView(
-            extraKeysView,
-            LinearLayout.LayoutParams(
-                MATCH_PARENT,
-                (rowHeightPx * extraKeysInfo.matrix.size + 0.5f).toInt(),
-            ),
-        )
+        extraKeysHeightPx = (rowHeightPx * extraKeysInfo.matrix.size + 0.5f).toInt()
+        view.addView(extraKeysView, LinearLayout.LayoutParams(MATCH_PARENT, extraKeysHeightPx))
         extraKeysView.reload(extraKeysInfo, rowHeightPx)
-        setContentView(root)
+    }
 
-        // A launcher entry with Terminal=true arrives as EXTRA_COMMAND
-        // (EntryLauncher). Consumed so same-process recreation doesn't
-        // respawn it — but removeExtra can't reach the system's stored
-        // copy of the task's base intent, which is redelivered pristine
-        // when the user reopens the task from recents after process
-        // death. savedInstanceState survives process death, so its
-        // presence means "restore, don't re-run the command".
-        val command =
-            if (savedInstanceState != null) null else consumeCommandExtras(intent)
-        var commandTabIndex = -1
+    /**
+     * Show the in-use tabs, or the pending shell (reused from the
+     * registry across recreation, else spawned). [command] (a
+     * `Terminal=true` launcher entry) opens as a new in-use tab first.
+     */
+    fun attach(command: CommandTab? = null) {
         if (command != null) {
-            val s = spawnSession(command.exec, command.label)
-            if (s != null) {
-                TerminalSessions.add(distroId, s)
-                commandTabIndex = TerminalSessions.list(distroId).size - 1
-            }
+            // The command is what the user asked for; a pending shell
+            // beside it would be an extra tab nobody opened.
+            TerminalSessions.killPending(distroId)
+            spawnSession(command.exec, command.label)?.let { TerminalSessions.add(distroId, it) }
         }
-        var sessions = TerminalSessions.list(distroId)
+        val sessions = TerminalSessions.list(distroId)
         if (sessions.isEmpty()) {
-            // Zero tabs = nothing to show; only this initial spawn
-            // failure finishes the activity (cf. openNewTab).
-            val s = if (command != null) null else spawnSession()
-            if (s == null) {
-                finish()
-                return
-            }
-            TerminalSessions.add(distroId, s)
-            sessions = listOf(s)
+            showPending(TerminalSessions.pending(distroId) ?: spawnPending())
+            return
         }
         for ((i, s) in sessions.withIndex()) {
             s.updateTerminalSessionClient(this)
             tabBar.addTab(labelFor(s, i))
         }
-        selectTab(if (commandTabIndex >= 0) commandTabIndex else TerminalSessions.selected(distroId))
-
+        showTabs()
+        selectTab(if (command != null) sessions.size - 1 else TerminalSessions.selected(distroId))
         terminalView.requestFocus()
     }
 
     /**
-     * documentLaunchMode="intoExisting" routes repeat launches for this
-     * distro's URI here. A command launch (Terminal=true entry) opens a
-     * new tab running it; a plain launch just brings the task forward.
+     * Stop driving the sessions. In-use shells keep running under a
+     * [DetachedTerminalClient]; the pending one is killed unless
+     * [keepPending] (activity recreation reattaches it).
      */
-    override fun onNewIntent(intent: android.content.Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        val command = consumeCommandExtras(intent) ?: return
-        openNewTab(command.exec, command.label)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (::terminalView.isInitialized) terminalView.onScreenUpdated()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // Sessions outlive this activity in [TerminalSessions]; drop
-        // their references to us so the destroyed activity (and view
-        // tree) is collectable. Reopening swaps the live client back in.
+    fun detach(keepPending: Boolean = false) {
+        if (detached) return
+        detached = true
+        view.removeCallbacks(relabel)
         for (s in TerminalSessions.list(distroId)) {
             s.updateTerminalSessionClient(DetachedTerminalClient(distroId))
         }
-        // Distinguish "task swiped away in recents" from recreation
-        // (config change, system pressure): a swipe removes the recents
-        // card before destroying us; recreation isn't finishing. With
-        // the card gone nothing can reattach, so kill every shell like
-        // closing a desktop terminal window. Back never finishes us
-        // (see onCreate), so a live card always has a live activity to
-        // receive this.
-        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val taskInRecents = am.appTasks.any { it.taskInfo.taskId == taskId }
-        if (isFinishing && !taskInRecents) {
-            for (s in TerminalSessions.removeAll(distroId)) s.finishIfRunning()
+        if (keepPending) {
+            TerminalSessions.pending(distroId)?.updateTerminalSessionClient(DetachedTerminalClient(distroId))
+        } else {
+            TerminalSessions.killPending(distroId)
         }
+        activeSession = null
     }
+
+    fun onResume() {
+        terminalView.onScreenUpdated()
+    }
+
+    fun showSoftKeyboard() {
+        terminalView.requestFocus()
+        val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        // Post: on first show the view isn't attached to the window yet.
+        terminalView.post { imm.showSoftInput(terminalView, 0) }
+    }
+
+    /** A `Terminal=true` entry: [exec] in a new in-use tab. */
+    fun openCommandTab(command: CommandTab) {
+        TerminalSessions.killPending(distroId)
+        openNewTab(command.exec, command.label)
+    }
+
+    // ---- pending ---------------------------------------------------------
+
+    private fun spawnPending(): TerminalSession? =
+        spawnSession()?.also { TerminalSessions.setPending(distroId, it) }
+
+    /** [session] null = the spawn failed (toast shown); a tap retries. */
+    private fun showPending(session: TerminalSession?) {
+        tabBar.setPendingLabel(distroLabel)
+        terminalView.keepScreenOn = false
+        activeSession = session
+        if (session != null) {
+            session.updateTerminalSessionClient(this)
+            terminalView.attachSession(session)
+            terminalView.onScreenUpdated()
+        }
+        terminalView.requestFocus()
+    }
+
+    private fun showTabs() {
+        tabBar.setPendingLabel(null)
+        terminalView.keepScreenOn = true
+    }
+
+    /** The pending shell is running and got input: make it tab 1. */
+    private fun promotePending() {
+        val session = activeSession ?: return
+        if (!isPending || !session.isRunning || TerminalSessions.pending(distroId) !== session) return
+        TerminalSessions.promote(distroId)
+        showTabs()
+        tabBar.addTab(labelFor(session, 0))
+        tabBar.setSelected(0)
+        host.onTerminalStateChanged()
+    }
+
+    /** Dead or failed pending shell: replace it with a fresh one. */
+    private fun respawnPending() {
+        TerminalSessions.killPending(distroId)
+        showPending(spawnPending())
+    }
+
+    private fun pendingIsDead(): Boolean = isPending && activeSession?.isRunning != true
 
     // ---- tabs ------------------------------------------------------------
-
-    /** Command + tab label from a launcher-entry intent, or null. The
-     *  extras are removed so a retained/recreated intent can't respawn
-     *  the command. */
-    private data class CommandExtras(val exec: String, val label: String?)
-
-    private fun consumeCommandExtras(intent: android.content.Intent?): CommandExtras? {
-        val exec = intent?.getStringExtra(EXTRA_COMMAND) ?: return null
-        val label = intent.getStringExtra(EXTRA_LABEL)
-        intent.removeExtra(EXTRA_COMMAND)
-        intent.removeExtra(EXTRA_LABEL)
-        return CommandExtras(exec, label)
-    }
 
     /**
      * Spawn a fresh shell session, or toast and return null on failure:
@@ -281,14 +260,14 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
     private fun spawnSession(command: String? = null, label: String? = null): TerminalSession? {
         // GUI programs typed into the shell start the compositor by
         // connecting; its sockets must be listening first.
-        CompositorService.ensureActivation(this)
+        CompositorService.ensureActivation(activity)
         val exec = try {
             method.ptyShellExec(
                 store.rootfsDir(distroId).absolutePath,
                 command = command?.let { "$it$HOLD_OPEN_TRAILER" },
             )
         } catch (e: IOException) {
-            Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+            Toast.makeText(activity, e.message, Toast.LENGTH_LONG).show()
             return null
         }
         return TerminalSession(
@@ -310,7 +289,7 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         // entry's name in mSessionName.
         return if (title == null || title == "~") {
             session.mSessionName?.takeUnless { it.isBlank() }
-                ?: getString(R.string.terminal_tab_home, index + 1)
+                ?: activity.getString(R.string.terminal_tab_home, index + 1)
         } else {
             title
         }
@@ -334,16 +313,23 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
     }
 
     private fun openNewTab(command: String? = null, label: String? = null) {
+        // Only command tabs get here while pending (`+` is hidden then),
+        // and those already killed the pending shell.
+        if (pendingIsDead()) TerminalSessions.killPending(distroId)
+        promotePending()
         val session = spawnSession(command, label) ?: return // toast shown; existing tabs stay up
+        val wasPending = isPending
         TerminalSessions.add(distroId, session)
+        if (wasPending) showTabs()
         val index = TerminalSessions.list(distroId).size - 1
         tabBar.addTab(labelFor(session, index))
         selectTab(index)
+        if (wasPending) host.onTerminalStateChanged()
     }
 
     private fun closeTab(index: Int) {
         val session = TerminalSessions.list(distroId).getOrNull(index) ?: return
-        if (session.isRunning) {
+        if (session.isRunning && session.pid > 0) {
             // The exit lands back in onSessionFinished, which removes
             // the tab.
             session.finishIfRunning()
@@ -354,7 +340,7 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         }
     }
 
-    /** Drop [session]'s tab; pick the neighbor or finish on last-tab. */
+    /** Drop [session]'s tab; pick the neighbor, or report the last exit. */
     private fun removeFinishedSession(session: TerminalSession) {
         val index = TerminalSessions.list(distroId).indexOfFirst { it === session }
         if (index < 0) return
@@ -362,10 +348,9 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         tabBar.removeTab(index)
         if (TerminalSessions.list(distroId).isEmpty()) {
             // Last shell gone (user typed `exit`, closed the tab, or the
-            // rootfs side died). Closing the screen and dropping the
-            // recents card mirrors a desktop terminal window; a leftover
-            // card would just respawn a fresh shell when tapped.
-            if (!isFinishing) finishAndRemoveTask()
+            // rootfs side died): like closing a desktop terminal window.
+            activeSession = null
+            host.onLastShellExited()
             return
         }
         relabelTabs()
@@ -377,14 +362,7 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         }
     }
 
-    private fun showSoftKeyboard() {
-        terminalView.requestFocus()
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.showSoftInput(terminalView, 0)
-    }
-
     private fun changeFontSize(increase: Boolean) {
-        val density = resources.displayMetrics.density
         val step = (FONT_SIZE_STEP_DP * density).toInt().coerceAtLeast(1)
         val min = (MIN_FONT_SIZE_DP * density).toInt()
         val max = (MAX_FONT_SIZE_DP * density).toInt()
@@ -403,6 +381,7 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
     }
 
     override fun onSingleTapUp(e: MotionEvent) {
+        if (pendingIsDead()) respawnPending()
         showSoftKeyboard()
     }
 
@@ -419,22 +398,26 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
 
     override fun copyModeChanged(copyMode: Boolean) {}
 
+    // Together with onCodePoint and the paste callback this gates every
+    // TerminalView write path except autofill, so it is where a
+    // pending shell becomes in use. System keys (Back, volume) and bare
+    // modifiers write nothing.
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-        // Enter on a dead session closes its tab (only reachable in the
-        // race window before onSessionFinished lands).
         if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
-            removeFinishedSession(session)
+            if (pendingIsDead()) {
+                respawnPending()
+            } else {
+                // Enter on a dead tab closes it (only reachable in the
+                // race window before onSessionFinished lands).
+                removeFinishedSession(session)
+            }
             return true
         }
+        if (!e.isSystem && !KeyEvent.isModifierKey(keyCode)) promotePending()
         return false
     }
 
-    // TerminalViewClient.onKeyUp shares Activity.onKeyUp's signature,
-    // so this one override serves both callers: TerminalView consults
-    // it for app-handled keys (none), and the framework dispatches
-    // unhandled key-ups here. Returning a bare `false` would shadow
-    // Activity.onKeyUp and swallow the back button.
-    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = super.onKeyUp(keyCode, e)
+    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = false
 
     override fun onLongPress(event: MotionEvent): Boolean = false
 
@@ -451,12 +434,15 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
 
     override fun readFnKey(): Boolean = readSpecialButton(SpecialButton.FN)
 
-    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean = false
+    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        promotePending()
+        return false
+    }
 
     override fun onEmulatorSet() {}
 
     // ---- TerminalSessionClient -----------------------------------------
-    // The activity is the sole client for all live sessions; each
+    // The pane is the sole client for its distro's live sessions; each
     // callback carries the changed session, so display callbacks act
     // only for the selected tab while background sessions keep
     // accumulating transcript via their pty reader threads.
@@ -465,26 +451,41 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         if (changedSession === activeSession) terminalView.onScreenUpdated()
     }
 
+    // A prompt can set the title twice in a row (a distro
+    // PROMPT_COMMAND's `root@localhost:~`, then ShellDefaults' `~`),
+    // and the two may land in separate output chunks; relabelling on
+    // each would flash the long one. Settle first.
     override fun onTitleChanged(changedSession: TerminalSession) {
-        val index = TerminalSessions.list(distroId).indexOfFirst { it === changedSession }
-        if (index >= 0) tabBar.setLabel(index, labelFor(changedSession, index))
+        view.removeCallbacks(relabel)
+        view.postDelayed(relabel, TITLE_SETTLE_MS)
     }
 
+    private val relabel = Runnable { if (!detached) relabelTabs() }
+
     override fun onSessionFinished(finishedSession: TerminalSession) {
+        if (TerminalSessions.pending(distroId) === finishedSession) {
+            // Died before anyone typed (e.g. a broken login shell):
+            // closing the app here would make it unopenable. Keep the
+            // transcript with termux's exit line; tap/Enter respawns.
+            if (finishedSession === activeSession) terminalView.onScreenUpdated()
+            return
+        }
         removeFinishedSession(finishedSession)
     }
 
     override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {
         if (text.isNullOrEmpty()) return
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("", text))
     }
 
     override fun onPasteTextFromClipboard(session: TerminalSession?) {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val item = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return
-        val text = item.coerceToText(this).toString()
-        if (text.isNotEmpty()) terminalView.currentSession?.emulator?.paste(text)
+        val text = item.coerceToText(activity).toString()
+        if (text.isEmpty()) return
+        promotePending()
+        terminalView.currentSession?.emulator?.paste(text)
     }
 
     override fun onBell(session: TerminalSession) {}
@@ -523,41 +524,34 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         Log.e(tag ?: TAG, "", e)
     }
 
-    companion object {
-        const val EXTRA_ID = "id"
+    /** A launcher entry's Exec line to run in a tab, and its label. */
+    data class CommandTab(val exec: String, val label: String?)
 
-        /** Shell fragment to run instead of an interactive shell (a
-         *  launcher entry's Exec line; same trust level as
-         *  EntryLauncher's own concatenation). */
-        const val EXTRA_COMMAND = "command"
-
-        /** Tab label for an [EXTRA_COMMAND] session (the entry name). */
-        const val EXTRA_LABEL = "label"
-
+    private companion object {
         /**
-         * Appended to every [EXTRA_COMMAND] before spawn: the session
-         * would exit (and [onSessionFinished] drop the tab) the moment
-         * the command finishes, vanishing its output. Holding in `read`
+         * Appended to every command tab before spawn: the session would
+         * exit (and [onSessionFinished] drop the tab) the moment the
+         * command finishes, vanishing its output. Holding in `read`
          * keeps the shell alive until a keypress, then the normal
          * tab-removal flow runs — no session-lifecycle changes.
          */
-        private const val HOLD_OPEN_TRAILER =
+        const val HOLD_OPEN_TRAILER =
             "; __c=$?; printf '\\n[exited %d — press any key]\\n' \"\$__c\"; read -rsn1"
 
-        private const val TAG = "tawc-terminal"
-        private const val TRANSCRIPT_ROWS = 4000
-        private const val TAB_BAR_HEIGHT_DP = 40
-        private const val DEFAULT_FONT_SIZE_DP = 13f
+        const val TAG = "tawc-terminal"
+        const val TITLE_SETTLE_MS = 150L
+        const val TRANSCRIPT_ROWS = 4000
+        const val DEFAULT_FONT_SIZE_DP = 13f
         // Termux's default extra-keys config and per-row height
         // (TermuxPropertyConstants.DEFAULT_IVALUE_EXTRA_KEYS and the
         // 37.5dp terminal_toolbar_view_pager in activity_termux.xml).
-        private const val EXTRA_KEYS_CONFIG =
+        const val EXTRA_KEYS_CONFIG =
             "[['ESC','/',{key: '-', popup: '|'},'HOME','UP','END','PGUP'], " +
                 "['TAB','CTRL','ALT','LEFT','DOWN','RIGHT','PGDN']]"
-        private const val EXTRA_KEYS_STYLE = "default"
-        private const val EXTRA_KEYS_ROW_HEIGHT_DP = 37.5f
-        private const val FONT_SIZE_STEP_DP = 1f
-        private const val MIN_FONT_SIZE_DP = 7f
-        private const val MAX_FONT_SIZE_DP = 36f
+        const val EXTRA_KEYS_STYLE = "default"
+        const val EXTRA_KEYS_ROW_HEIGHT_DP = 37.5f
+        const val FONT_SIZE_STEP_DP = 1f
+        const val MIN_FONT_SIZE_DP = 7f
+        const val MAX_FONT_SIZE_DP = 36f
     }
 }

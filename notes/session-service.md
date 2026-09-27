@@ -20,13 +20,15 @@ reports. The registry itself never touches Android (JVM-unit-tested);
 
 | Reason | Acquired | Released |
 |---|---|---|
-| `Terminal(distroId)` | `TerminalSessions.add` | `remove` / `removeAll` |
+| `Terminal(distroId)` | `TerminalSessions.add` / `promote` (first input to a pending shell) | `remove` / `removeAll` |
 | `Command(label)` | around the process in `UserRootfsSession.startInside` (launcher headless launch, `RunCommandOp`, broker `RUNINSIDE`) | a waiter thread on process exit |
 | `Compositor(windowCount)` | `CompositorService`, when `nativeStartCompositor` spawned a thread | `onCompositorStopped` |
 | `Stray(count)` | never acquired; service-internal | — |
 
-Terminal holds live in `TerminalSessions`, not the activity — sessions
-outlive it. Command holds follow the `Process`, so no caller cooperates.
+Terminal holds live in `TerminalSessions`, not the pane — sessions
+outlive it. The home screen's *pending* shell (auto-spawned, nothing
+typed yet) holds nothing on purpose: opening the app must not start a
+foreground service (notes/terminal.md "Session model"). Command holds follow the `Process`, so no caller cooperates.
 
 ## Service
 
@@ -50,15 +52,19 @@ the spawn carries on unprotected (the next acquire retries).
 **Stray tail.** A `nohup`/`setsid` job outlives its tab and holds nothing.
 When the last hold releases, the service runs `ProcessScanner.scan`
 off-thread; if guests remain it stays up as "N background processes" and
-re-scans every 15 s until none do. Only this tail state polls.
+re-scans every 15 s until none do. Only this tail state polls. The scan
+excludes pending terminal pids (`TerminalSessions.pendingPids`); a
+pending shell has no children, so its pid is enough
+(`lazy_compositor::test_session_holds_ignore_pending_terminal`).
 
 **Notification.** Channel `tawc_session` (the old `tawc_compositor`
 channel is deleted), low importance, ongoing. Title "TAWC running", text
 e.g. "2 terminals · 3 windows", "Running: htop", "3 background
-processes". Tap opens `MainActivity`.
+processes". Tap opens `MainActivity` on its last pane. Swiping the
+recents card leaves in-use shells running; the tap brings them back.
 
 **Exit** (`SessionExit.killEverything`) kills everything: finishes every
-terminal session (tabs/activities close through the normal
+terminal session, pending ones included (tabs close through the normal
 `onSessionFinished` path), stops the compositor, and
 `ProcessScanner.killAllInRootfs` for every install — except installs that
 are not `READY` or have a live `install:`/`uninstall:` operation, whose
@@ -96,7 +102,7 @@ other apps → `procState=16`, adj 910, and `am kill me.phie.tawc` took
 every guest with it. About a minute after screen-off, light Doze's
 `fw_dozable` chain cut all guest network (guests run as the app uid):
 DNS-shaped failures, curl exit 6, unreproducible while watching because
-`TerminalActivity` keeps the screen on.
+the in-use terminal keeps the screen on.
 
 After, with a rootfs command running and the app behind three others:
 `procState=4` (FGS), adj 50, `am kill` a no-op, a 1 s ticker unbroken. A

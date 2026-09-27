@@ -25,7 +25,7 @@ The compositor (`compositor/src/`) is split into:
   by walking the installed icon themes and their `Inherits=` chains; SVG
   sources are rasterized into a per-install cache by **icon_cache.rs**, XPM is
   skipped (see notes/launcher.md "Icon resolution").
-  Returns a JSON array string to Kotlin (`LauncherActivity`) via the
+  Returns a JSON array string to Kotlin (`LauncherEntry.scan`) via the
   `nativeLauncherScan` JNI entry. No compositor-state interaction — just pure
   file I/O, safe to call from any thread.
 - **text_input.rs** -- `zwp_text_input_v3` server impl bridging Android InputConnection.
@@ -56,17 +56,18 @@ The compositor (`compositor/src/`) is split into:
 
 Kotlin side (`app/src/main/java/me/phie/tawc/`):
 
-- **MainActivity.kt** -- Home screen (only Activity in `category.LAUNCHER`). Shows
-  the one open distro with a Terminal FAB, a drawer to switch distros or
-  install one, and ⋮ for Distro info / Run command / Task manager / Settings (notes/android.md
-  "Home screen"). Nothing starts the compositor explicitly (see
+- **MainActivity.kt** -- Home screen (only Activity in `category.LAUNCHER`). Hosts
+  one pane for the open distro — intro, distro info, terminal
+  (`terminal/TerminalPane`) or app list (`launcher/AppsPane`) — with a FAB
+  toggling terminal/apps, a drawer to switch distros or install one, and
+  one ⋮ menu (notes/android.md "Home screen"). Nothing starts the compositor explicitly (see
   "Compositor lifecycle" below); user-launched rootfs commands go through
   `UserRootfsSession`, which holds a session reason for the process's lifetime.
-- **launcher/LauncherActivity.kt** -- Per-distro app picker. Reads the rootfs's
+- **launcher/AppsPane.kt** -- Per-distro app list on the home screen. Reads the rootfs's
   `.desktop` files via [`NativeBridge.nativeLauncherScan`][launcher.rs] (Rust does the
-  scan + parsing), shows a type-to-filter list with each entry's icon, fires
-  `UserRootfsSession.runInside` on a process-wide `LAUNCH_SCOPE` so the
-  launcher Activity can finish without killing the launched program. `Enter`
+  scan + parsing), shows a type-to-filter list with each entry's icon, and
+  launches through `EntryLauncher` (`UserRootfsSession.runInside` on a
+  process-wide `LAUNCH_SCOPE`, so nothing on screen owns the program). `Enter`
   launches the top filtered match.
 - **launcher/IconLoader.kt** -- Async PNG icon decoder for launcher rows.
   Caches `path → Bitmap` in a byte-bounded `LruCache` (an eighth of the heap,
@@ -142,7 +143,7 @@ explicitly, and an idle one stops.
   `CompositorService.ensureActivation` (asset extraction + `TAWC_*` env +
   `nativeStartActivation`), which every spawn path calls first
   (`TawcApplication` startup thread, `UserRootfsSession.startInside`,
-  `TerminalActivity.spawnSession`) so the sockets are listening before any
+  `TerminalPane.spawnSession`) so the sockets are listening before any
   guest exists and extraction never sits in the connect→accept gap. No
   `.lock` file: one process, one holder.
 - While no compositor thread exists the holder thread `poll()`s both sockets

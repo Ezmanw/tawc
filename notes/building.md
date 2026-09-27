@@ -698,7 +698,7 @@ generated from it by `scripts/gen-icon.sh`:
 | Generated file | Where it shows up |
 |----------------|-------------------|
 | `app/src/main/res/drawable/ic_launcher_foreground.xml` | foreground layer of the adaptive launcher icon (`mipmap-anydpi-v26/ic_launcher.xml`) — the home screen, the app switcher, and pinned Linux-app shortcuts (`EntryShortcuts` falls back to `R.mipmap.ic_launcher`) |
-| `app/src/main/res/drawable/ic_tawc_logo.xml` | the mark at full size, no safe-zone scale; launcher-row fallback icon for graphical entries with no icon of their own (`LauncherActivity`) |
+| `app/src/main/res/drawable/ic_tawc_logo.xml` | the mark at full size, no safe-zone scale; the home drawer header and intro pane logo (`MainActivity`) |
 | `app/src/main/res/values/icon_colors.xml` | `tawc_icon_bg`, the adaptive icon's background layer |
 | `fastlane/metadata/android/en-US/images/icon.png` | the F-Droid store listing (512×512) |
 

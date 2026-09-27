@@ -26,4 +26,6 @@
          (which is the only chromatic button on the page). -->
     <color name="tawc_tonal_bg">#3A363D</color>
     <color name="tawc_on_tonal">#FFFFFF</color>
+    <!-- Checked home-drawer row (drawable/nav_item_bg). -->
+    <color name="tawc_nav_selected">#2C2932</color>
 </resources>

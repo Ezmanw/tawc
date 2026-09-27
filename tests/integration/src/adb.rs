@@ -763,6 +763,26 @@ pub fn session_exit() -> io::Result<Output> {
     broker_action("session-exit", &[])
 }
 
+/// Put the home screen on `pane` (`terminal` / `apps`) for the test
+/// install, without the IME (notes/exec-broker.md `home-pane`).
+pub fn home_pane(pane: &str) -> io::Result<Output> {
+    let install_id = crate::install_id();
+    broker_action("home-pane", &[("pane", pane), ("installId", &install_id)])
+}
+
+/// The test install's terminal: `pending`, `inUse:<n>` or `none`.
+pub fn terminal_state() -> io::Result<String> {
+    let install_id = crate::install_id();
+    let output = broker_action("terminal-state", &[("installId", &install_id)])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Whether the session foreground service is up.
+pub fn session_service_running() -> io::Result<bool> {
+    let output = shell("dumpsys activity services me.phie.tawc/.session.SessionService")?;
+    Ok(String::from_utf8_lossy(&output.stdout).contains("ServiceRecord"))
+}
+
 /// The app's `nativeLibraryDir` (where the APK's jniLibs land on this
 /// device), via the broker `app-info` action. The tawcroot prod-env
 /// tests exec `libtawcroot.so` from there — the one app-readable

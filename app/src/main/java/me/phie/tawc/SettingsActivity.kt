@@ -30,9 +30,9 @@ import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
 /**
- * App settings screen. Reachable from the home screen's ⋮ menu. The
- * first card holds the open distro's per-install settings
- * ([OpenDistro]); the rest are global. Each section is its own card with a bold title at the top
+ * App settings screen. Reachable from the home screen's ⋮ menu and a
+ * drawer row's ⋮. The first card holds per-install settings for
+ * [EXTRA_ID] (else the open distro, [OpenDistro]); the rest are global. Each section is its own card with a bold title at the top
  * followed by the section's controls. Add a new section by building a
  * card via [buildSectionCard] and adding it to `scaffold.content`.
  *
@@ -101,7 +101,11 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         distroSlot.removeAllViews()
-        val inst = OpenDistro.resolve(store)
+        // A drawer row's ⋮ names its install; otherwise the open one.
+        val inst = intent.getStringExtra(EXTRA_ID)
+            ?.takeIf { Installation.isValidId(it) }
+            ?.let { store.load(it) }
+            ?: OpenDistro.resolve(store)
         if (inst == null) {
             distroSlot.visibility = android.view.View.GONE
         } else {
@@ -343,5 +347,10 @@ class SettingsActivity : AppCompatActivity() {
         }
         card.addView(column)
         return card
+    }
+
+    companion object {
+        /** Install whose card leads the screen; default the open one. */
+        const val EXTRA_ID = "id"
     }
 }

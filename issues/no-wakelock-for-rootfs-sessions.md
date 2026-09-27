@@ -6,7 +6,7 @@ shows no TAWC-owned wakelock (only transient
 `NotificationManagerService:post:me.phie.tawc` ones owned by uid 1000).
 
 The only thing keeping the device awake during terminal work is
-`TerminalActivity`'s `keepScreenOn = true` (TerminalActivity.kt:146),
+`TerminalPane`'s `keepScreenOn = true` (TerminalPane.kt),
 which applies solely while the terminal is the visible activity — i.e.
 it stops exactly when the user leaves the app, which is when the
 reported failures happen.

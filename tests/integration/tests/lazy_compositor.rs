@@ -254,3 +254,46 @@ fn test_session_holds_follow_commands_and_exit_kills_everything() {
     }
     let _ = cmd.stop();
 }
+
+/// The home screen's pending shell (nobody typed into it yet) holds no
+/// session reason and is not a stray: once a command's hold is gone the
+/// service stops with the shell still running.
+#[test]
+fn test_session_holds_ignore_pending_terminal() {
+    let _unpinned = Unpinned::new();
+    // Visible, so the terminal view lays out and starts the shell.
+    adb::shell("am start -n me.phie.tawc/.MainActivity").expect("start MainActivity");
+    adb::home_pane("terminal").expect("home-pane terminal");
+    let wait_state = |want: &str| {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let state = adb::terminal_state().expect("terminal-state");
+            if state == want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "terminal-state {state:?}, want {want:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    wait_state("pending");
+    let reasons = adb::session_state().expect("session-state");
+    assert!(reasons.is_empty(), "pending shell took a hold: {reasons:?}");
+
+    // A command's hold starts the service; releasing it enters the
+    // stray tail, which must not count the pending shell.
+    let out = adb::rootfs_run_with(BACKEND, "true").expect("run true");
+    assert!(out.status.success(), "`true` failed");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while adb::session_service_running().expect("dumpsys") {
+        assert!(
+            Instant::now() < deadline,
+            "session service stayed up with only a pending shell: {:?}",
+            adb::session_state()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    wait_state("pending");
+
+    adb::home_pane("apps").expect("home-pane apps");
+    wait_state("none");
+}

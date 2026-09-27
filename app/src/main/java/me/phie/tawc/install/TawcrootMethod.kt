@@ -136,7 +136,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
     /**
      * Spawn parameters for an interactive in-rootfs login shell on a
      * caller-owned pty — the in-app terminal
-     * ([me.phie.tawc.terminal.TerminalActivity]), whose termux
+     * ([me.phie.tawc.terminal.TerminalPane]), whose termux
      * terminal-emulator JNI forks the pty pair and execs [argv]
      * directly. Same envelope as [startInside] minus the `setsid`
      * prefix: the pty spawn setsid()s the child itself, which both

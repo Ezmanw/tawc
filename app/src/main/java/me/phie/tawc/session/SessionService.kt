@@ -27,6 +27,7 @@ import me.phie.tawc.MainActivity
 import me.phie.tawc.R
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.tasks.ProcessScanner
+import me.phie.tawc.terminal.TerminalSessions
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -110,8 +111,11 @@ class SessionService : Service() {
         }
     }
 
+    // A pending terminal shell (nobody typed into it yet) holds nothing
+    // on purpose and has no children, so skipping its pid is enough.
     private fun countGuests(): Int = try {
-        ProcessScanner.scan(this, InstallationStore(this).list()).processes.size
+        ProcessScanner.scan(this, InstallationStore(this).list(), TerminalSessions.pendingPids())
+            .processes.size
     } catch (t: Throwable) {
         Log.w(TAG, "stray scan failed", t)
         0

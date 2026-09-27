@@ -49,42 +49,42 @@ data class Scaffold(
 fun AppCompatActivity.buildChildScreen(title: CharSequence): Scaffold =
     buildScreenInternal(title, withUp = true)
 
-/** Top-level screen (Home): toolbar with title only, no up arrow. */
-fun AppCompatActivity.buildHomeScreen(title: CharSequence): Scaffold =
-    buildScreenInternal(title, withUp = false).also {
-        it.toolbar.setTitleCentered(true)
-        it.toolbar.setTitleTextAppearance(this, R.style.TextAppearance_Tawc_HomeTitle)
-    }
-
 /**
- * [buildHomeScreen] inside a [DrawerLayout] with a start-edge
- * [NavigationView]: hamburger in the toolbar opens it, Back closes it.
- * [DrawerScreen.body] overlays the content column so a FAB can sit
- * bottom-right. Set `setContentView(drawerScreen.drawer)`.
+ * Home screen shell: a [DrawerLayout] with a start-edge
+ * [NavigationView] around a toolbar-less [body]. The body hosts one
+ * pane, which supplies its own top row (with a ≡ that calls
+ * [DrawerScreen.openDrawer]); a FAB can float over it. [root] pads
+ * system bars and the IME so pane content shrinks above the keyboard
+ * (the window must be `adjustResize`). Back closes an open drawer.
+ * Set `setContentView(drawerScreen.drawer)`.
  */
 class DrawerScreen(
     val drawer: DrawerLayout,
     val nav: NavigationView,
-    val scaffold: Scaffold,
+    val root: FrameLayout,
     val body: FrameLayout,
-)
+) {
+    fun openDrawer() = drawer.openDrawer(nav)
+}
 
-fun AppCompatActivity.buildDrawerScreen(title: CharSequence): DrawerScreen {
-    // System-bar insets stay on the main column (buildScreenInternal):
-    // the drawer runs under the status bar and pads its own contents.
-    val home = buildScreenInternal(title, withUp = false).also {
-        it.toolbar.setTitleCentered(true)
-        it.toolbar.setTitleTextAppearance(this, R.style.TextAppearance_Tawc_HomeTitle)
+fun AppCompatActivity.buildDrawerScreen(): DrawerScreen {
+    // Insets stay on the main column: the drawer runs under the status
+    // bar and pads its own contents.
+    val root = FrameLayout(this)
+    ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+        val bars = insets.getInsets(
+            WindowInsetsCompat.Type.systemBars() or
+                WindowInsetsCompat.Type.displayCutout() or
+                WindowInsetsCompat.Type.ime()
+        )
+        view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        insets
     }
-    // Re-parent the content column into a FrameLayout so overlays
-    // (the FAB) can float over it.
-    home.root.removeView(home.content)
     val body = FrameLayout(this)
-    body.addView(home.content, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-    home.root.addView(body, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+    root.addView(body, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
 
     val drawer = DrawerLayout(this)
-    drawer.addView(home.root, DrawerLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+    drawer.addView(root, DrawerLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
     val surfaces = ContextThemeWrapper(this, R.style.ThemeOverlay_Tawc_Surfaces)
     val nav = NavigationView(surfaces).apply {
         fitsSystemWindows = true
@@ -96,11 +96,6 @@ fun AppCompatActivity.buildDrawerScreen(title: CharSequence): DrawerScreen {
         nav,
         DrawerLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT).also { it.gravity = Gravity.START },
     )
-    home.toolbar.popupTheme = R.style.ThemeOverlay_Tawc_Surfaces
-
-    home.toolbar.setNavigationIcon(R.drawable.ic_menu)
-    home.toolbar.setNavigationContentDescription(R.string.action_open_drawer)
-    home.toolbar.setNavigationOnClickListener { drawer.openDrawer(nav) }
 
     val backCloses = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() = drawer.closeDrawer(nav)
@@ -111,8 +106,16 @@ fun AppCompatActivity.buildDrawerScreen(title: CharSequence): DrawerScreen {
         override fun onDrawerClosed(drawerView: View) { backCloses.isEnabled = false }
     })
 
-    return DrawerScreen(drawer, nav, home, body)
+    return DrawerScreen(drawer, nav, root, body)
 }
+
+/**
+ * Height of every home pane's top row, so switching panes doesn't
+ * move the chrome.
+ */
+fun Context.paneTopRowHeightPx(): Int = (PANE_TOP_ROW_DP * resources.displayMetrics.density).toInt()
+
+private const val PANE_TOP_ROW_DP = 48
 
 private fun AppCompatActivity.buildScreenInternal(title: CharSequence, withUp: Boolean): Scaffold {
     val root = LinearLayout(this).apply {

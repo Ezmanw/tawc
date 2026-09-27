@@ -93,8 +93,9 @@ The Android app code (`app/src/main/java/me/phie/tawc/`) is split so that
 everything talking to the Rust compositor lives in its own package, separate from
 the rest of the app's UI/management features.
 
-- `MainActivity.kt` — home screen (see "Home screen" below). Plain
-  Android UI (no fullscreen, no Wayland).
+- `MainActivity.kt` — home screen hosting the intro / info / terminal /
+  apps panes (see "Home screen" below). Plain Android UI (no
+  fullscreen, no Wayland).
 - `OpenDistro.kt` — which install the home screen shows.
 - `compositor/` — everything that interacts with the Rust compositor:
   - `CompositorActivity.kt` — fullscreen immersive Activity that owns the
@@ -122,39 +123,62 @@ the compositor or install packages.
 
 ## Home screen
 
-One distro is "open" at a time; the home screen shows only that one
-and a start-edge drawer switches. Most users have one install and
-never need the drawer.
+Opening the app lands in a shell, termux-style. `MainActivity`
+(`singleTask`, `configChanges` for rotation, `adjustResize`) hosts
+exactly one pane for the one open distro, plus a FAB. Panes are plain
+view controllers, no Fragments; each supplies its own top row (same
+height, `paneTopRowHeightPx`), so there is no toolbar.
 
-- **State:** `Settings.openDistroId` (pref `open_distro`; the test
-  store starts null). Always read through `OpenDistro.resolve`, which
-  falls back stored id → first READY → first install → null and writes
-  the fallback back. Screens resolve on `onResume`; none cache it.
-  Written by the drawer and by `InstallActivity` on Install (the new
-  slot opens so home shows its progress). Uninstall writes nothing.
-- **Layout:** `ui/Scaffold.kt` `buildDrawerScreen` (DrawerLayout +
-  NavigationView; Back closes the drawer). Toolbar: hamburger, title,
-  ⋮ (Distro info, Run command… when READY, Task manager, Settings).
-  Body, straight on the page (no card): the open distro's label and
-  distro line, a red state line for non-READY (INSTALLING/UNINSTALLING link to the live
-  `LogScreenActivity` op log), and the search stub into
-  `LauncherActivity`. Terminal is the round accent FAB (`tawcFab`), shown
-  only for READY tawcroot installs. No install: empty text plus the
-  accent Install button.
-- **Drawer:** one checkable row per install in `store.list()` order
-  (non-READY ones get a ` · state` suffix), a divider, then Install
-  new distro. It and the ⋮ popup use `ThemeOverlay.Tawc.Surfaces`
-  (neutral surface, accent-tinted selection) instead of Material3's
-  lavender containers.
+| Pane | When | Top row |
+|---|---|---|
+| Intro | no installs | `[≡] TAWC [⋮]`, logo, blurb, accent Install |
+| Info (`DistroInfoView`) | open distro not READY | `[≡] <label> [⋮]`; state row links to the live op log |
+| Terminal (`terminal/TerminalPane`) | READY + tawcroot, pane = terminal | `[≡][tabs… +][⋮]` (dark `TerminalTabBar`) |
+| Apps (`launcher/AppsPane`) | READY otherwise | `[≡][Search <label>][⋮]` |
+
+- **Open distro:** `Settings.openDistroId` (pref `open_distro`; the test
+  store starts null). Always read through `OpenDistro.resolve` (stored
+  id → first READY → first install → null, written back). Written by
+  the drawer, `InstallActivity` on Install (a fresh install opens on its
+  own progress), and command launches.
+- **Chosen pane:** `Settings.homePane` (`home_pane`, default
+  `terminal`), one global value. Written by the FAB, ⋮ Apps,
+  starting an install (a new distro opens on its progress, then its
+  prompt) and the debug `home-pane` action. The info pane never
+  overwrites it. A command launch forces the terminal up without
+  writing it.
+- **FAB:** apps pane → terminal (only when possible); pending terminal →
+  apps (`ic_apps`, lifted above the extra keys); in-use terminal → none
+  (⋮ → Apps).
+- **⋮:** one `PopupMenu` per screen, top to bottom: pane items (apps:
+  Show hidden (N) when N > 0, Add entry…; in-use terminal: Apps — the
+  one pane toggle, since no FAB shows there), Settings (opened on that
+  distro's card, `SettingsActivity.EXTRA_ID`), Run… (READY), Task
+  manager, Distro info.
+- **Drawer:** a checkable row per install (` · state` for non-READY,
+  ` · N terminals` for live shells, re-read as the drawer opens), each
+  with a trailing ⋮ (Settings, Run…, Distro info for *that* install, no
+  switch); then Install new distro (no divider). The open distro's row has a
+  neutral fill and a left accent strip (`drawable/nav_item_bg`).
+  Opening the drawer drops the IME. Drawer and popups use
+  `ThemeOverlay.Tawc.Surfaces`.
+- **IME:** both panes ask for the keyboard when shown (cold start, FAB,
+  distro switch); the drawer root pads system bars + IME. The terminal
+  pane also darkens the bar bands and turns their icons light.
+- **Back:** closes the drawer, else `moveTaskToBack` (intro: default).
+- **Intents:** `EntryLauncher` sends `EXTRA_DISTRO` + `EXTRA_COMMAND` +
+  `EXTRA_LABEL` for `Terminal=true` entries (and pinned shortcuts via
+  `ShortcutLaunchActivity`); consumed once (`removeExtra`;
+  `savedInstanceState` means restore). The session notification is a
+  plain launch.
 - **Settings:** the first card, titled with the open distro's label, holds
   its per-install settings (ando toggle, Manage binds; READY/FAILED only,
   else a one-line note), rebuilt in `onResume`. Omitted with no install.
-  Every other card is global. Distro info is read-only plus Delete.
-- `TaskManagerActivity` stays cross-distro; launcher, terminal and
-  shortcuts still take an install id.
-- Open ideas: make the home screen *be* the open distro's launcher
-  (changes `LauncherActivity`'s focus/finish-on-launch behaviour); a
-  permanent drawer on wide screens.
+  Every other card is global. `DistroInfoActivity` (same
+  `DistroInfoView`) stays reachable from ⋮ for any install and holds
+  Delete.
+- Terminal lifecycle (pending vs in use): [terminal.md](terminal.md).
+- Open ideas: a permanent drawer on wide screens.
 
 ## Audio
 

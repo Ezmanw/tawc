@@ -76,7 +76,7 @@ the requesting process's controlling tty instead:
   readable by the app, and a terminal tab's processes carry its pts
   (`tty_nr` 34818 = pts/2; broker/launcher-spawned ones have 0).
 - Kotlin pushes down the pts number of the terminal tab that currently
-  has Android window focus (none when no `TerminalActivity` is focused);
+  has Android window focus (none when no TAWC activity is focused);
   `TerminalSessions` owns the ptys. Allow the read iff `tty_nr` matches.
   Otherwise close the fd (empty paste), like the existing gates.
 - Applies to every data-control read, client-owned selections included,
