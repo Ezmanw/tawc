@@ -11,6 +11,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [cache-proxy.md](cache-proxy.md) - dev mirror cache behavior and safety rules.
 - [emulator.md](emulator.md) - AVD setup, rooted/rootless workflows, x86_64 limitations.
 - [release.md](release.md) - versioning scheme, release prep/publish steps, keystore rules.
+- [reproducible-builds.md](reproducible-builds.md) - why releases build in F-Droid's image, signing flags, drift risks.
 - [licensing.md](licensing.md) - MIT sources vs GPLv3 binary, what makes it so, and how the notice/attribution obligations are met.
 
 ## Runtime Architecture

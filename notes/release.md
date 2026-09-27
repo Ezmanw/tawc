@@ -8,7 +8,7 @@ result, and distribute the maintainer-signed APK instead of one signed with
 their own key. One signing lineage means nobody ever has to uninstall (which
 would delete their distros) to switch channels. The container build needs no
 keys, so the agent runs it; the maintainer only signs. See
-[plans/reproducible-builds.md](../plans/reproducible-builds.md) and
+[reproducible-builds.md](reproducible-builds.md) and
 [building.md](building.md) ("F-Droid buildserver rig").
 
 ## Versioning

@@ -188,7 +188,7 @@ the epoch from HEAD's commit time (0 outside a git checkout), and its
 `repro_tar` wrapper packs the asset tars with fixed entry order, owner,
 modes and mtime. Gradle reads both back via `scripts/lib/repro.sh
 --epoch` / `--tar-args`. Set `SOURCE_DATE_EPOCH` yourself to override.
-See [reproducible-builds](../plans/reproducible-builds.md).
+See [reproducible-builds.md](reproducible-builds.md).
 
 ## Vendored repos
 
@@ -610,7 +610,7 @@ Two modes:
   F-Droid's path is what makes their independent rebuild of the tag come
   out byte-identical, so they can distribute the maintainer-signed APK.
   `scripts/fdroid/compare-apks.py A.apk B.apk` is the entry-by-entry
-  check. See [plans/reproducible-builds.md](../plans/reproducible-builds.md).
+  check. See [reproducible-builds.md](reproducible-builds.md).
 
 `run.sh --cpuset-cpus <spec>` and `--fresh-cache` vary core count and
 cache warmth, which is how a build gets checked for determinism.
