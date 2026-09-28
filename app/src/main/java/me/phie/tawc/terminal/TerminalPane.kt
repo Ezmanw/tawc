@@ -28,7 +28,9 @@ import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.ui.paneTopRowHeightPx
+import java.io.File
 import java.io.IOException
+import java.lang.ref.WeakReference
 
 /**
  * The home screen's terminal pane: interactive shells into one
@@ -85,9 +87,10 @@ internal class TerminalPane(
     private val terminalView: TerminalView
     private val extraKeysView: ExtraKeysView
     private val tabBar: TerminalTabBar
-    private var activeSession: TerminalSession? = null
+    // Volatile: [focusedTty] reads them off the main thread.
+    @Volatile private var activeSession: TerminalSession? = null
     private var fontSizePx = (DEFAULT_FONT_SIZE_DP * density).toInt()
-    private var detached = false
+    @Volatile private var detached = false
 
     // For [maybeDemote]: where the pending shell got its first input;
     // cleared by Enter, a paste or a tab switch.
@@ -151,6 +154,7 @@ internal class TerminalPane(
      * `Terminal=true` launcher entry) opens as a new in-use tab first.
      */
     fun attach(command: CommandTab? = null) {
+        current = WeakReference(this)
         if (command != null) {
             // The command is what the user asked for; a pending shell
             // beside it would be an extra tab nobody opened.
@@ -179,6 +183,7 @@ internal class TerminalPane(
     fun detach(keepPending: Boolean = false) {
         if (detached) return
         detached = true
+        if (current?.get() === this) current = null
         view.removeCallbacks(relabel)
         for (s in TerminalSessions.list(distroId)) {
             s.updateTerminalSessionClient(DetachedTerminalClient(distroId))
@@ -576,7 +581,29 @@ internal class TerminalPane(
     /** A launcher entry's Exec line to run in a tab, and its label. */
     data class CommandTab(val exec: String, val label: String?)
 
-    private companion object {
+    /** [Companion.focusedTty] for this pane. */
+    private fun focusedTty(): Int {
+        if (detached || !terminalView.hasWindowFocus()) return 0
+        val pid = activeSession?.pid?.takeIf { it > 0 } ?: return 0
+        return try {
+            ShellIdle.ttyOf(File("/proc/$pid/stat").readText()) ?: 0
+        } catch (_: IOException) {
+            0
+        }
+    }
+
+    companion object {
+        /** The attached pane, for [focusedTty]. */
+        @Volatile private var current: WeakReference<TerminalPane>? = null
+
+        /**
+         * `tty_nr` of the shell the user is looking at: the attached
+         * pane's selected tab, while its window has Android focus. 0 for
+         * none. Any thread — the compositor gates `wl-paste` on it
+         * (notes/clipboard.md).
+         */
+        fun focusedTty(): Int = current?.get()?.focusedTty() ?: 0
+
         /**
          * Appended to every command tab before spawn: the session would
          * exit (and [onSessionFinished] drop the tab) the moment the

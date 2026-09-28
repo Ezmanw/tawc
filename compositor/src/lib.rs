@@ -1093,6 +1093,15 @@ pub fn fetch_android_clipboard_text() -> Option<String> {
     .flatten()
 }
 
+/// Reverse-JNI: `tty_nr` of the terminal tab the user is looking at, 0
+/// for none (see [`clipboard::allow_data_control_read`]).
+pub fn focused_terminal_tty() -> i32 {
+    with_native_bridge_result("focusedTerminalTty", |env, class| {
+        env.call_static_method(class, "focusedTerminalTty", "()I", &[])?.i()
+    })
+    .unwrap_or(0)
+}
+
 /// Reverse-JNI: push compositor/Wayland-owned text into Android's real
 /// ClipboardManager. Kotlin's announce path tags the write with TAWC's
 /// own clip label so the resulting clipboard-changed announce doesn't

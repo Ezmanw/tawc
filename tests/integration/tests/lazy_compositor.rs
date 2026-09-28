@@ -7,7 +7,10 @@
 
 use std::time::{Duration, Instant};
 
-use tawc_integration::helpers::{ensure_wayland_debug_app, has_shm_surface, TIMEOUT};
+use tawc_integration::helpers::{
+    close_home_terminal, ensure_wayland_debug_app, has_shm_surface, show_home_terminal,
+    terminal_run, wait_for_rootfs_file, wait_terminal_state, TIMEOUT,
+};
 use tawc_integration::rootfs_process::RootfsProcess;
 use tawc_integration::{adb, compositor, GraphicsBackend};
 
@@ -364,6 +367,34 @@ fn test_swipe_hangs_up_terminals() {
     // can't launch from the background.
     adb::shell("am start -n me.phie.tawc/.MainActivity").expect("start MainActivity");
     adb::home_pane("apps").expect("home-pane apps");
+}
+
+/// `wl-copy` from a cold terminal starts the compositor, which mirrors
+/// the text into Android, takes the selection over from the surfaceless
+/// daemon (which then exits) and stops; `wl-paste` restarts it and reads
+/// the text back from Android.
+#[test]
+fn test_wl_copy_survives_compositor_stop() {
+    let _unpinned = Unpinned::new();
+    let _ = adb::rootfs_run_with(BACKEND, "rm -f /tmp/tawc-wlp-lazy*");
+    show_home_terminal();
+    wait_terminal_state("pending");
+    // Let the shell print its first prompt before typing.
+    std::thread::sleep(Duration::from_secs(1));
+
+    terminal_run("wl-copy%slazy-wl-copy");
+    let deadline = Instant::now() + START_TIMEOUT;
+    while adb::clipboard_get_text().expect("get Android clipboard") != "lazy-wl-copy" {
+        assert!(Instant::now() < deadline, "wl-copy text never reached Android");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    compositor::wait_for_stopped(STOP_TIMEOUT).expect("compositor should stop after wl-copy");
+
+    terminal_run("wl-paste%s-n>/tmp/tawc-wlp-lazy;touch%s/tmp/tawc-wlp-lazy.done");
+    wait_for_rootfs_file(BACKEND, "/tmp/tawc-wlp-lazy.done", START_TIMEOUT);
+    assert_eq!(wait_for_rootfs_file(BACKEND, "/tmp/tawc-wlp-lazy", TIMEOUT), "lazy-wl-copy");
+    let _ = adb::rootfs_run_with(BACKEND, "rm -f /tmp/tawc-wlp-lazy*");
+    close_home_terminal();
 }
 
 /// "Keep awake" holds `tawc:session` only while on; off, Exit and the

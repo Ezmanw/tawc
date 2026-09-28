@@ -10,6 +10,7 @@ import android.view.PointerIcon
 import android.view.Surface
 import android.view.inputmethod.EditorInfo
 import androidx.core.net.toUri
+import me.phie.tawc.terminal.TerminalPane
 import java.lang.ref.WeakReference
 
 object NativeBridge {
@@ -630,6 +631,12 @@ object NativeBridge {
             ClipboardBridge.setTextFromCompositor(text)
         }
     }
+
+    /** Called from native, on the event loop, to gate data-control
+     *  clipboard reads (`wl-paste`): the `tty_nr` of the terminal tab the
+     *  user is looking at, 0 for none. */
+    @JvmStatic
+    fun focusedTerminalTty(): Int = TerminalPane.focusedTty()
 
     /** Called from a native clipboard-fetch thread when a client pastes the
      *  compositor-owned Android selection. Runs the real clipboard read —

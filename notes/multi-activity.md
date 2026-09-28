@@ -239,6 +239,19 @@ surface. Buffer imports still happen (those are GL-global), so when the
 Activity finally registers its `Surface`, the first frame can render
 without re-importing.
 
+The *initial configure* is deferred the same way: `new_toplevel` sends
+it only if the assigned host already has a size, else
+`reconfigure_all_toplevels` sends it on "Host registered" (~50–500 ms
+later). This avoids configure(0,0) and size guesses, but breaks clients
+that attach a buffer after exactly one roundtrip past the initial
+commit — wl-clipboard's popup-surface fallback died with
+`xdg_surface error 3: must ack the initial configure` this way (it now
+uses data-control; see clipboard.md). If a second such client turns up:
+send a provisional configure with the last registered host's logical
+size (kept in `TawcState` across host teardown) when the assigned host
+has none yet, and let the real registration correct it. Cost: one
+extra resize in split-screen/freeform, where sizes differ.
+
 ## wl_output and toplevel sizing
 
 A single `wl_output` global, created in `TawcState::new` and alive for the

@@ -183,8 +183,8 @@ explicitly, and an idle one stops.
   (`TawcState::selection_mirrored`), the compositor installs the payloadless
   Android selection: the owner gets `cancelled` and exits, pastes are served
   from Android. An unmirrored selection (non-text, over cap) keeps its owner
-  and pins the compositor — it is the only copy. Not exercised end to end
-  yet: `wl-copy` itself fails earlier, see `plans/wl-clipboard-support.md`.
+  and pins the compositor — it is the only copy. Covered by
+  `lazy_compositor::test_wl_copy_survives_compositor_stop`.
 - The kumquat listener is one thread for the life of the process.
 - Verified by `lazy_compositor::*`: Wayland and X11-only cold start, idle
   stop, restart, and flat fd/thread counts over start/stop cycles.

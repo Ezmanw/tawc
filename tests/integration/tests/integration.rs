@@ -19,4 +19,5 @@ mod tawcroot_prodenv;
 mod text_input;
 mod uninstall_wipe;
 mod touch_input;
+mod wl_clipboard;
 mod xwayland;

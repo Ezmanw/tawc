@@ -56,12 +56,18 @@ internal object ShellIdle {
         return true
     }
 
-    /** Session id from a `/proc/<pid>/stat` line: the 4th field after
-     *  the `(comm)`, which may itself hold spaces and parentheses. */
-    fun sessionOf(stat: String): Int? {
+    /** Session id from a `/proc/<pid>/stat` line. */
+    fun sessionOf(stat: String): Int? = statField(stat, 3)
+
+    /** Controlling tty (`tty_nr`, 0 for none) from a `/proc/<pid>/stat` line. */
+    fun ttyOf(stat: String): Int? = statField(stat, 4)
+
+    /** The [index]th field after the `(comm)`, which may itself hold
+     *  spaces and parentheses. */
+    private fun statField(stat: String, index: Int): Int? {
         val close = stat.lastIndexOf(')')
         if (close < 0) return null
         val fields = stat.substring(close + 1).trim().split(' ')
-        return fields.getOrNull(3)?.toIntOrNull()
+        return fields.getOrNull(index)?.toIntOrNull()
     }
 }
