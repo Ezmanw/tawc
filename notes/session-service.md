@@ -23,6 +23,7 @@ reports. The registry itself never touches Android (JVM-unit-tested);
 | `Terminal(distroId)` | `TerminalSessions.add` / `promote` (first input to a pending shell) | `remove` / `removeAll` |
 | `Command(label)` | around the process in `UserRootfsSession.startInside` (launcher headless launch, `RunCommandOp`, broker `RUNINSIDE`) | a waiter thread on process exit |
 | `Compositor(windowCount)` | `CompositorService`, when `nativeStartCompositor` spawned a thread | `onCompositorStopped` |
+| `Remote(distroId, clients)` | `RemoteSession.start` (remote access, [remote-access.md](remote-access.md)); client count updated from the agent's status | the agent ending (Stop, TTL, failure, Exit, uninstall) |
 | `Stray(count)` | never acquired; service-internal | — |
 
 Terminal holds live in `TerminalSessions`, not the pane — sessions

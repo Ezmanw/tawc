@@ -402,6 +402,12 @@ if [ "$(adb shell "su -c 'id -u'" 2>/dev/null | tr -d '\r\n')" != "0" ]; then
     echo "=== Marking root-requiring tests ignored (no Magisk-style su on target) ==="
     EXTRA_RUSTFLAGS+=(--cfg tawc_skip_root_on_target)
 fi
+# The live remote-access test needs network on both the target and this
+# host (it goes through sshyeet.com); opt in with TAWC_LIVE_RELAY=1.
+if [ "${TAWC_LIVE_RELAY:-}" = 1 ]; then
+    echo "=== Enabling the live-relay remote access test ==="
+    EXTRA_RUSTFLAGS+=(--cfg tawc_live_relay)
+fi
 if [ "${#EXTRA_RUSTFLAGS[@]}" -gt 0 ]; then
     export RUSTFLAGS="${RUSTFLAGS:-} ${EXTRA_RUSTFLAGS[*]}"
 fi

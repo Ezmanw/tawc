@@ -4,6 +4,9 @@
     <uses-feature android:glEsVersion="0x00020000" android:required="true" />
 
     <!-- Bootstrap tarballs are downloaded directly by the install package. -->
+    <!-- Remote access local-network mode: tells cellular interfaces
+         apart so it never listens on one (remote/LocalNetwork.kt). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- SessionService keeps the process in the foreground while anything
          is alive in a rootfs (terminals, commands, the compositor);
@@ -110,6 +113,11 @@
             android:name=".install.DistroInfoActivity"
             android:exported="false"
             android:label="@string/title_distro_info" />
+
+        <activity
+            android:name=".remote.RemoteAccessActivity"
+            android:exported="false"
+            android:label="@string/title_remote_access" />
 
         <activity
             android:name=".install.InstallMethodInfoActivity"

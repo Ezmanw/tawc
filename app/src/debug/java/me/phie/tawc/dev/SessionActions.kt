@@ -55,6 +55,7 @@ internal object SessionActions {
                         is Reason.Command -> "command ${r.label}"
                         is Reason.Compositor -> "compositor ${r.windowCount}"
                         is Reason.Stray -> "stray ${r.count}"
+                        is Reason.Remote -> "remote ${r.distroId} ${r.clients}"
                     },
                 )
             }

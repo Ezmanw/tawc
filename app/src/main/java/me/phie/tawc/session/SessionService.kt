@@ -203,6 +203,12 @@ class SessionService : Service() {
         if (s.strays > 0) {
             parts += resources.getQuantityString(R.plurals.session_strays, s.strays, s.strays)
         }
+        if (s.remote) {
+            parts += getString(R.string.session_remote)
+            if (s.remoteClients > 0) {
+                parts += resources.getQuantityString(R.plurals.session_remote_clients, s.remoteClients, s.remoteClients)
+            }
+        }
         // Only a windowless compositor (e.g. serving a clipboard client).
         if (parts.isEmpty()) return getString(R.string.session_display_server)
         return parts.joinToString(" · ")

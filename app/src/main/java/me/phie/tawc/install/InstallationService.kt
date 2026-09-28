@@ -970,6 +970,7 @@ class InstallationService : Service() {
         fun startUninstall(context: Context, id: String) {
             // Nobody typed into it; don't make the uninstall sweep it.
             TerminalSessions.killPending(id)
+            me.phie.tawc.remote.RemoteSession.stopFor(id)
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_UNINSTALL)
                 .putExtra(EXTRA_ID, id)

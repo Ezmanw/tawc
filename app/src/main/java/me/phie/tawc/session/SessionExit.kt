@@ -7,6 +7,7 @@ import me.phie.tawc.install.ChrootMethod
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.ops.OperationsRegistry
+import me.phie.tawc.remote.RemoteSession
 import me.phie.tawc.tasks.ProcessScanner
 import me.phie.tawc.terminal.TerminalSessions
 import me.phie.tawc.terminal.kill
@@ -27,6 +28,7 @@ internal object SessionExit {
         // Shells die through the normal path: the exit closes the tab
         // (or the detached client drops the entry) and releases the hold.
         for (session in TerminalSessions.all()) session.kill()
+        RemoteSession.stop()
         CompositorService.stop()
         val app = context.applicationContext
         thread(name = "tawc-session-exit", isDaemon = true) {

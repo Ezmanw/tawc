@@ -27,11 +27,23 @@ object Settings {
     private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
     private const val KEY_OPEN_DISTRO = "open_distro"
     private const val KEY_HOME_PANE = "home_pane"
+    private const val KEY_REMOTE_RELAY = "remote_relay"
+    private const val KEY_REMOTE_IDLE_CLOSE = "remote_idle_close"
+    private const val KEY_REMOTE_MODE = "remote_mode"
+    private const val KEY_REMOTE_LOGIN = "remote_login"
+    private const val KEY_REMOTE_KEY_USER = "remote_key_user"
+    private const val KEY_REMOTE_PASTED_KEY = "remote_pasted_key"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
     const val OUTPUT_SCALE_STEP = 0.25f
     const val DEFAULT_OUTPUT_SCALE = 2.0f
+    const val DEFAULT_REMOTE_RELAY = "https://sshyeet.com"
+    const val REMOTE_IDLE_SECONDS = 5 * 60L
+    const val REMOTE_MODE_LOCAL = "local"
+    const val REMOTE_MODE_RELAY = "relay"
+    const val REMOTE_LOGIN_SECRET = "secret"
+    const val REMOTE_LOGIN_PASTE = "paste"
     val DEFAULT_TINT_BUFFERS_BY_TYPE = BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT
 
     private interface Store {
@@ -42,6 +54,12 @@ object Settings {
         var gtk3BrokenMenusWorkaround: Boolean
         var openDistroId: String?
         var homePane: HomePane
+        var remoteRelay: String
+        var remoteIdleClose: Boolean
+        var remoteMode: String
+        var remoteLogin: String
+        var remoteKeyUser: String
+        var remotePastedKey: String
     }
 
     private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
@@ -89,6 +107,42 @@ object Settings {
             set(value) {
                 prefs.edit { putString(KEY_HOME_PANE, value.key) }
             }
+
+        override var remoteRelay: String
+            get() = prefs.getString(KEY_REMOTE_RELAY, null) ?: DEFAULT_REMOTE_RELAY
+            set(value) {
+                prefs.edit { putString(KEY_REMOTE_RELAY, value) }
+            }
+
+        override var remoteIdleClose: Boolean
+            get() = prefs.getBoolean(KEY_REMOTE_IDLE_CLOSE, true)
+            set(value) {
+                prefs.edit { putBoolean(KEY_REMOTE_IDLE_CLOSE, value) }
+            }
+
+        override var remoteMode: String
+            get() = prefs.getString(KEY_REMOTE_MODE, null) ?: REMOTE_MODE_LOCAL
+            set(value) {
+                prefs.edit { putString(KEY_REMOTE_MODE, value) }
+            }
+
+        override var remoteLogin: String
+            get() = prefs.getString(KEY_REMOTE_LOGIN, null) ?: REMOTE_LOGIN_SECRET
+            set(value) {
+                prefs.edit { putString(KEY_REMOTE_LOGIN, value) }
+            }
+
+        override var remoteKeyUser: String
+            get() = prefs.getString(KEY_REMOTE_KEY_USER, null) ?: ""
+            set(value) {
+                prefs.edit { putString(KEY_REMOTE_KEY_USER, value) }
+            }
+
+        override var remotePastedKey: String
+            get() = prefs.getString(KEY_REMOTE_PASTED_KEY, null) ?: ""
+            set(value) {
+                prefs.edit { putString(KEY_REMOTE_PASTED_KEY, value) }
+            }
     }
 
     private class TestStore : Store {
@@ -100,6 +154,12 @@ object Settings {
         @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
         @Volatile override var openDistroId: String? = null
         @Volatile override var homePane: HomePane = HomePane.DEFAULT
+        @Volatile override var remoteRelay: String = DEFAULT_REMOTE_RELAY
+        @Volatile override var remoteIdleClose: Boolean = true
+        @Volatile override var remoteMode: String = REMOTE_MODE_LOCAL
+        @Volatile override var remoteLogin: String = REMOTE_LOGIN_SECRET
+        @Volatile override var remoteKeyUser: String = ""
+        @Volatile override var remotePastedKey: String = ""
     }
 
     @Volatile private var store: Store? = null
@@ -183,6 +243,37 @@ object Settings {
     var homePane: HomePane
         get() = requireStore().homePane
         set(value) { requireStore().homePane = value }
+
+    /** Remote access relay base URL (the start screen's field). */
+    var remoteRelay: String
+        get() = requireStore().remoteRelay
+        set(value) { requireStore().remoteRelay = value }
+
+    /** Remote access: close after [REMOTE_IDLE_SECONDS] with no connection. */
+    var remoteIdleClose: Boolean
+        get() = requireStore().remoteIdleClose
+        set(value) { requireStore().remoteIdleClose = value }
+
+    /** Remote access: [REMOTE_MODE_LOCAL] or [REMOTE_MODE_RELAY]. */
+    var remoteMode: String
+        get() = requireStore().remoteMode
+        set(value) { requireStore().remoteMode = value }
+
+    /** Remote access login: [REMOTE_LOGIN_SECRET], [REMOTE_LOGIN_PASTE], or
+     *  a [me.phie.tawc.remote.KeyHost] key. */
+    var remoteLogin: String
+        get() = requireStore().remoteLogin
+        set(value) { requireStore().remoteLogin = value }
+
+    /** Remote access: the code-host username whose keys may log in. */
+    var remoteKeyUser: String
+        get() = requireStore().remoteKeyUser
+        set(value) { requireStore().remoteKeyUser = value }
+
+    /** Remote access: pasted public key(s). */
+    var remotePastedKey: String
+        get() = requireStore().remotePastedKey
+        set(value) { requireStore().remotePastedKey = value }
 
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE

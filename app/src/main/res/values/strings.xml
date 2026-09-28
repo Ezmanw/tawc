@@ -269,8 +269,43 @@
         <item quantity="one">%1$d program</item>
         <item quantity="other">%1$d programs</item>
     </plurals>
+    <string name="session_remote">remote access</string>
+    <plurals name="session_remote_clients">
+        <item quantity="one">%1$d client</item>
+        <item quantity="other">%1$d clients</item>
+    </plurals>
     <plurals name="session_strays">
         <item quantity="one">%1$d background process</item>
         <item quantity="other">%1$d background processes</item>
     </plurals>
+    <string name="title_remote_access">Remote access</string>
+    <string name="action_remote_access">Remote access</string>
+    <string name="remote_intro">SSH into this device&#8230;</string>
+    <string name="remote_relay_hint">https://sshyeet.com</string>
+    <string name="remote_mode_local">Over local network</string>
+    <string name="remote_mode_relay">From anywhere, via a relay</string>
+    <string name="remote_login">Public key from</string>
+    <string name="remote_login_secret">Generated passphrase</string>
+    <string name="remote_login_paste">Paste key</string>
+    <string name="remote_key_user_hint">%1$s username</string>
+    <string name="remote_key_paste_hint">ssh-ed25519 AAAA&#8230;</string>
+    <string name="remote_keys_from">Logs in with keys from %1$s</string>
+    <string name="remote_no_local_network">Not on a local network. Connect to Wi-Fi.</string>
+    <string name="remote_no_key_user">Enter a %1$s username</string>
+    <string name="remote_no_pasted_key">Paste a public key</string>
+    <string name="remote_idle_close">Close after 5 minutes of inactivity</string>
+    <string name="remote_start">Start</string>
+    <string name="remote_starting">Starting&#8230;</string>
+    <string name="remote_stop">Stop</string>
+    <string name="remote_running_other">Remote access is running for %1$s.</string>
+    <string name="remote_ready">Ready</string>
+    <string name="remote_status_connecting">Connecting&#8230;</string>
+    <string name="remote_status_reconnecting">Reconnecting&#8230;</string>
+    <plurals name="remote_connections">
+        <item quantity="one">%1$d connection</item>
+        <item quantity="other">%1$d connections</item>
+    </plurals>
+    <string name="remote_fingerprint">Host key %1$s</string>
+    <string name="remote_secret_disabled">Too many wrong secrets. Stop and start again for a new one.</string>
+    <string name="remote_copied">Copied</string>
 </resources>

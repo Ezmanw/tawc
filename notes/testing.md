@@ -54,6 +54,7 @@ prerequisites are. As of writing the modules are:
 | `lazy_compositor` | `cpu`    | Socket-activated lifecycle, unpinned: a Wayland client and an X11-only client each cold-start the compositor, it stops after they leave and restarts for the next; fd/thread counts stay flat over start/stop cycles; session holds follow commands and Exit kills everything; hold churn does not crash the session service. |
 | `settings`      | `cpu`       | Runtime settings coverage: output scale, configure-state policy, and GTK3 broken menus workaround. |
 | `tawcroot`      | n/a         | tawcroot device-side smokes (wraps the cleat-driven suite). |
+| `remote`        | n/a         | Remote access ([remote-access.md](remote-access.md)): inert before any start; the live-relay test (`ssh -J sshyeet.com` from the host, Stop hangs up) runs only with `TAWC_LIVE_RELAY=1` (`--cfg tawc_live_relay`, needs network on target and host). |
 | `uninstall_wipe` | n/a        | Wipe-engine edge cases against a *fabricated* KB-scale slot (mount gate, su-retry ladder). Rooted target only. |
 
 **Persistent-state policy.** Integration tests must not mutate state

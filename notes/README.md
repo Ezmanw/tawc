@@ -26,6 +26,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [log-screen.md](log-screen.md) - shared operation/log-screen UI abstraction.
 - [launcher.md](launcher.md) - distro launcher and `.desktop` scanner.
 - [terminal.md](terminal.md) - in-app per-distro terminal (vendored termux terminal modules, tawcroot pty spawn path).
+- [remote-access.md](remote-access.md) - ssh into a distro from anywhere via the sshyeet.com relay: Rust client (`remote/`), trust model, protocol, tests.
 - [multi-activity.md](multi-activity.md) - one-Android-task-per-window design and implementation notes.
 - [task-icons-window-index.md](task-icons-window-index.md) - task recents icons/labels and Kotlin open-window metadata mirror.
 

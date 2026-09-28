@@ -41,6 +41,7 @@ import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.install.showRunCommandDialog
 import me.phie.tawc.launcher.AppsPane
+import me.phie.tawc.remote.RemoteAccessActivity
 import me.phie.tawc.tasks.TaskManagerActivity
 import me.phie.tawc.terminal.TerminalPane
 import me.phie.tawc.terminal.TerminalSessions
@@ -432,7 +433,7 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
-    /** Settings (with [inst]'s card), Run… and Distro info for [inst]
+    /** Settings (with [inst]'s card), Run…, Remote access and Distro info for [inst]
      *  (home ⋮ and drawer row ⋮). */
     private fun addDistroItems(menu: Menu, inst: Installation) {
         menu.item(ORDER_SETTINGS, R.string.title_settings) {
@@ -440,6 +441,14 @@ class MainActivity : AppCompatActivity() {
         }
         if (inst.state == Installation.State.READY) {
             menu.item(ORDER_DISTRO, R.string.action_run_command) { showRunCommandDialog(inst) }
+        }
+        // Same gate as the terminal: the agent spawns through tawcroot.
+        if (terminalMethod(inst) != null) {
+            menu.item(ORDER_DISTRO, R.string.action_remote_access) {
+                startActivity(
+                    Intent(this, RemoteAccessActivity::class.java).putExtra(RemoteAccessActivity.EXTRA_ID, inst.id)
+                )
+            }
         }
         menu.item(ORDER_INFO, R.string.title_distro_info) {
             startActivity(

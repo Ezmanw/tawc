@@ -243,6 +243,7 @@ alone.
 | `./deps/mesa/`                             | `scripts/build-mesa-gfxstream.sh` (gfxstream-vk and Mesa-Zink assets) |
 | `./deps/gfxstream/`                        | `scripts/build-gfxstream-backend.sh`      |
 | `./deps/rutabaga_gfx/`                     | `scripts/ensure-deps.sh --patches rutabaga_gfx deps/rutabaga-patches/rutabaga_gfx`; Rust compositor kumquat server dep |
+| `./deps/openssh-portable/`                 | `remote/sftp-server/build.sh` (remote access sftp-server) |
 
 Two tarball deps (`talloc`, `libmd`) are *not* in `deps.list` — they
 ship as release tarballs, not git repos, so their pin is a
@@ -490,6 +491,33 @@ ndk`.
 cd compositor && \
     cargo ndk --target arm64-v8a --platform 29 -- build --release
 ```
+
+The compositor links the `remote/` crate (`tawc_remote`, remote access;
+see [remote-access.md](remote-access.md)) as a path dependency, so
+`remote/src` and `remote/Cargo.toml` are inputs of
+`buildRustLibrary<Abi>`, and its crates are pinned in
+`compositor/Cargo.lock` like the rest (the F-Droid recipe needs nothing
+extra). TLS is rustls with the `ring` backend only: `aws-lc-rs` would
+need cmake under cargo-ndk. `remote/` keeps its own `Cargo.lock` for
+host tests (`cd remote && cargo test`); unlike the compositor it builds
+and tests on the host.
+
+### sftp-server (OpenSSH → ships in APK as jniLib)
+
+Static bionic `sftp-server` for remote access sftp/scp, from the pinned
+`openssh-portable` dep (a release tag: its generated `configure` is used,
+no autotools needed). Needs only the NDK and `make`. The source is copied
+into `build/sftp-server-<abi>/` so the checkout stays clean. Gradle's
+`buildSftpServer<Abi>`; standalone:
+
+```bash
+remote/sftp-server/build.sh [--abi=aarch64|x86_64|both]
+```
+
+Output: `app/src/main/jniLibs/<abi>/libsftp-server.so`, installed into each
+rootfs at `/usr/lib/tawc/sftp-server`. The bionic workarounds and the
+passwd-lookup guard are in [remote-access.md](remote-access.md)
+"sftp-server".
 
 ### proot (Termux fork → ships in APK as jniLib)
 

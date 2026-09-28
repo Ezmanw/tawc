@@ -320,6 +320,18 @@ object NativeBridge {
      */
     external fun nativeLauncherScan(rootfs: String): String
 
+    // --- Remote access (me.phie.tawc.remote.RemoteSession; notes/remote-access.md) ---
+
+    /** Start the agent from a JSON request; null when started, else why
+     *  not (one already runs, bad relay URL, …). */
+    external fun nativeRemoteStart(request: String): String?
+
+    /** Stop and join the agent, hanging up every login. Idempotent. */
+    external fun nativeRemoteStop()
+
+    /** Agent status JSON; `{"state":"stopped"}` if nothing ever ran. */
+    external fun nativeRemoteStatus(): String
+
     // --- Reverse JNI: Compositor → Android (called from compositor thread) ---
 
     /** Called from native when a Wayland client enables text input. */
@@ -537,6 +549,14 @@ object NativeBridge {
     fun onActivationRequested() {
         val ctx = appContext ?: return
         CompositorService.ensureRunning(ctx)
+    }
+
+    /** Called from the remote agent's thread for each event. Must not
+     *  call the remote natives synchronously ([nativeRemoteStop] joins
+     *  that thread). */
+    @JvmStatic
+    fun onRemoteEvent(json: String) {
+        me.phie.tawc.remote.RemoteSession.onNativeEvent(json)
     }
 
     /** Called from the compositor thread as its very last act. */

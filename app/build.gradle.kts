@@ -498,10 +498,12 @@ tawcAbis.forEach { abi ->
             "${rootProject.projectDir}/compositor/Cargo.toml",
             "${rootProject.projectDir}/compositor/Cargo.lock",
             "${rootProject.projectDir}/compositor/build.rs",
+            "${rootProject.projectDir}/remote/Cargo.toml",
             "$tawcRoot/deps/deps.list",
             xkbStaticLib,
         )
         inputs.dir("${rootProject.projectDir}/compositor/src")
+        inputs.dir("${rootProject.projectDir}/remote/src")
         inputs.dir("${rootProject.projectDir}/compositor/protocols")
         inputs.dir("${rootProject.projectDir}/compositor/native")
         inputs.files(fileTree("$tawcRoot/deps/smithay") {
@@ -598,6 +600,23 @@ tawcAbis.forEach { abi ->
     }
     tasks.named("preBuild") {
         dependsOn(buildAndoTask)
+    }
+
+    // OpenSSH's sftp-server (static bionic) for remote access sftp/scp;
+    // installed into each rootfs by SftpServerInstallProvider.
+    val sftpServerBin = "$tawcRoot/app/src/main/jniLibs/$abi/libsftp-server.so"
+    val buildSftpServerTask = tasks.register<Exec>("buildSftpServer$capAbi") {
+        workingDir = tawcRoot
+        environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
+        commandLine("remote/sftp-server/build.sh", "--abi=$scriptAbi")
+        inputs.dir("$tawcRoot/remote/sftp-server")
+        inputs.file("$tawcRoot/deps/deps.list")
+        inputs.file("$tawcRoot/scripts/lib/deps.sh")
+        inputs.property("depTreeState", depTreeState("openssh-portable"))
+        outputs.file(sftpServerBin)
+    }
+    tasks.named("preBuild") {
+        dependsOn(buildSftpServerTask)
     }
 }
 
