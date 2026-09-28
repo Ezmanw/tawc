@@ -86,9 +86,15 @@ in `launcher.rs::scan_entries`:
 - `resolve_metadata_for_app_id` shares `scan_entries` for window
   icons/titles — a hidden app that is *running* must still resolve.
 
-The search row is `≡  [Search <distro>]  ⋮`, both buttons
-background-less (`plainIconButton`) so they read as row chrome. ≡ opens
-the home drawer. The ⋮ is the home screen's one menu; this pane adds a
+The pane is an Android-launcher-style grid: header `≡ <distro> 🔍 ⋮`
+(64dp, buttons background-less `plainIconButton`), then icons in name
+order with one-line, end-ellipsized names; descriptions are not shown.
+Columns = width / 88dp (min 3). Bottom padding lets the last row scroll
+clear of the FAB, which also hides while scrolling down. 🔍 (or a
+printable hardware key with nothing focused) opens a search field under
+the header; Enter launches the top match; ✕, Back or a launch closes
+and clears it. ≡ opens the home drawer. The ⋮ is the home screen's one
+menu; this pane adds a
 checkable **"Show hidden (N)"** item (N counts hidden ids that match
 actual entries; omitted when N is 0) and, on editable methods, **"Add
 entry…"** (the editor). Show-hidden is transient
@@ -191,7 +197,7 @@ trampoline).
   neutral square at 2/3 edge (adaptive-icon safe zone) and wrapped
   with `IconCompat.createWithAdaptiveBitmap` so it masks correctly on
   every launcher shape; no/undecodable icon falls back to the same
-  glyph the list row uses (`ic_terminal_fallback` for `Terminal=true`,
+  glyph the grid cell uses (`ic_terminal_fallback` for `Terminal=true`,
   `ic_app_fallback` otherwise) on a black backdrop — not the TAWC app
   icon, which would make a pinned icon-less app look like TAWC itself. Geometry (`pinIconFit`) + id mapping are JVM-unit-tested
   (`EntryShortcutsTest`); pinning itself is a launcher-UI interaction,

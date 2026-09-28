@@ -3,10 +3,13 @@ package me.phie.tawc.launcher
 import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
+import android.text.TextUtils
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.inputmethod.EditorInfo
@@ -14,12 +17,13 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.doAfterTextChanged
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,25 +34,27 @@ import me.phie.tawc.R
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.distro.DistroRegistry
-import me.phie.tawc.ui.paneTopRowHeightPx
 import me.phie.tawc.ui.plainIconButton
 import me.phie.tawc.ui.tawcButtonSizePx
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.verticalLp
 
 /**
- * The home screen's apps pane: type-to-filter list of installed
+ * The home screen's apps pane: an alphabetical icon grid of installed
  * `.desktop` apps for one distro. The Rust compositor library does the
- * actual scanning ([LauncherEntry.scan]); Kotlin here just renders +
- * filters + dispatches launches.
+ * actual scanning and name sort ([LauncherEntry.scan]); Kotlin here
+ * just renders + filters + dispatches launches.
  *
- * UX is intentionally minimal: `[≡][Search <distro>][⋮]`, one scrolling
- * list, Enter launches the top match, tap launches that row. Long-press
- * opens a per-entry action menu (Hide/Unhide, Add to home screen, Edit
- * — assembled in [entryActionsFor]). The home ⋮ gets this pane's
- * items from [addMenuItems] (Show hidden, Add entry…). Pinning,
- * frecency, window-list integration are deferred (see
- * notes/launcher.md "Future UX").
+ * Layout is Android-launcher-like: a `[≡] <distro> [🔍][⋮]` header,
+ * then a grid of icons with single-line names (no descriptions). 🔍
+ * (or typing on a hardware keyboard) opens a search field under the
+ * header that filters the grid; Enter launches the top match, and ✕ or
+ * Back closes it. Tap launches; long-press opens a per-entry action
+ * menu (Hide/Unhide, Add to home screen, Edit — assembled in
+ * [entryActionsFor]). The home ⋮ gets this pane's items from
+ * [addMenuItems] (Show hidden, Add entry…). Pinning, frecency,
+ * window-list integration are deferred (see notes/launcher.md
+ * "Future UX").
  *
  * Launches are fire-and-forget via [EntryLauncher], whose process-wide
  * scope outlives the pane. The list is rescanned on every show and
@@ -70,14 +76,19 @@ internal class AppsPane(
         fun showMenu(anchor: View)
         /** Start the `.desktop` editor for result; RESULT_OK → [rescan]. */
         fun openEditor(intent: Intent)
+        /** Grid scrolled; hide the FAB going down, show it going up. */
+        fun onGridScrolled(down: Boolean)
     }
 
     private val store = InstallationStore(activity)
     private val density = activity.resources.displayMetrics.density
     private val pad = (16 * density).toInt()
 
+    private val searchRow: View
     private val searchField: EditText
-    private val listColumn: LinearLayout
+    private val grid: RecyclerView
+    private val gridLayout: GridLayoutManager
+    private val adapter = EntryAdapter()
     private val emptyView: TextView
 
     /** Full app list (from the last scan). Filtered subset is rebuilt on every keystroke. */
@@ -101,16 +112,23 @@ internal class AppsPane(
 
     val view: LinearLayout
 
+    val isSearchOpen: Boolean get() = searchRow.visibility == View.VISIBLE
+
     init {
         view = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        view.addView(buildHeader(), LinearLayout.LayoutParams(MATCH_PARENT, (HEADER_HEIGHT_DP * density).toInt()))
 
         searchField = EditText(activity).apply {
-            hint = activity.getString(R.string.hint_search_distro, DistroRegistry.displayLabel(installation))
-            textSize = 18f
+            hint = activity.getString(R.string.hint_search_apps)
+            textSize = 16f
             isSingleLine = true
+            background = null
             imeOptions = EditorInfo.IME_ACTION_GO
             isFocusableInTouchMode = true
-            doAfterTextChanged { applyFilter() }
+            doAfterTextChanged {
+                applyFilter()
+                grid.scrollToPosition(0)
+            }
             setOnEditorActionListener { _, actionId, event ->
                 val isEnter = actionId == EditorInfo.IME_ACTION_GO ||
                     actionId == EditorInfo.IME_ACTION_DONE ||
@@ -118,34 +136,13 @@ internal class AppsPane(
                 if (isEnter) { launchTop(); true } else false
             }
         }
-        val drawerButton = activity.plainIconButton(
-            R.drawable.ic_menu,
-            activity.getString(R.string.action_open_drawer),
-        ) { host.openDrawer() }
-        // Under the shared glyph size: three solid dots read heavier
-        // than the line icons everything else uses.
-        lateinit var menuButton: View
-        menuButton = activity.plainIconButton(
-            R.drawable.ic_more_vert,
-            activity.getString(R.string.home_menu_description),
-            iconSizeDp = 21,
-        ) { host.showMenu(menuButton) }
-        val searchRow = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(pad / 4, 0, pad / 4, 0)
-        }
-        val button = activity.tawcButtonSizePx()
-        searchRow.addView(
-            drawerButton,
-            LinearLayout.LayoutParams(button, button).also { it.marginEnd = pad / 4 },
+        searchRow = buildSearchRow()
+        view.addView(
+            searchRow,
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).also {
+                it.setMargins(pad, 0, pad, pad / 2)
+            },
         )
-        searchRow.addView(searchField, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        searchRow.addView(
-            menuButton,
-            LinearLayout.LayoutParams(button, button).also { it.marginStart = pad / 4 },
-        )
-        view.addView(searchRow, LinearLayout.LayoutParams(MATCH_PARENT, activity.paneTopRowHeightPx()))
 
         emptyView = TextView(activity).apply {
             text = activity.getString(R.string.launcher_loading_apps)
@@ -155,21 +152,97 @@ internal class AppsPane(
         }
         view.addView(emptyView, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
 
-        listColumn = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad / 2, pad, pad * 5)
-        }
-        val scroll = ScrollView(activity).apply {
-            setFillViewport(true)
+        gridLayout = GridLayoutManager(activity, MIN_COLUMNS)
+        grid = RecyclerView(activity).apply {
+            layoutManager = gridLayout
+            adapter = this@AppsPane.adapter
+            // Room past the last row, so it can scroll clear of the FAB.
+            setPadding(pad / 2, pad / 4, pad / 2, (BOTTOM_CLEARANCE_DP * density).toInt())
             clipToPadding = false
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(pad)
             overScrollMode = View.OVER_SCROLL_NEVER
-            addView(listColumn)
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                    if (dy != 0) host.onGridScrolled(dy > 0)
+                }
+            })
+            // Columns follow the width (rotation, split screen).
+            addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+                val columns = maxOf(MIN_COLUMNS, v.width / (CELL_MIN_WIDTH_DP * density).toInt())
+                if (columns != gridLayout.spanCount) v.post { gridLayout.spanCount = columns }
+            }
         }
-        view.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        view.addView(grid, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         rescan()
+    }
+
+    /** `[≡] <distro> [🔍][⋮]`, taller than the terminal's tab row. */
+    private fun buildHeader(): View {
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad / 4, 0, pad / 4, 0)
+        }
+        val button = activity.tawcButtonSizePx()
+        row.addView(
+            activity.plainIconButton(R.drawable.ic_menu, activity.getString(R.string.action_open_drawer)) {
+                host.openDrawer()
+            },
+            LinearLayout.LayoutParams(button, button),
+        )
+        row.addView(TextView(activity).apply {
+            text = DistroRegistry.displayLabel(installation)
+            textSize = 22f
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(pad / 2, 0, pad / 2, 0)
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(
+            activity.plainIconButton(R.drawable.ic_search, activity.getString(R.string.action_search)) {
+                if (isSearchOpen) closeSearch() else openSearch()
+            },
+            LinearLayout.LayoutParams(button, button),
+        )
+        // Under the shared glyph size: three solid dots read heavier
+        // than the line icons everything else uses.
+        lateinit var menuButton: View
+        menuButton = activity.plainIconButton(
+            R.drawable.ic_more_vert,
+            activity.getString(R.string.home_menu_description),
+            iconSizeDp = 21,
+        ) { host.showMenu(menuButton) }
+        row.addView(menuButton, LinearLayout.LayoutParams(button, button))
+        return row
+    }
+
+    /** Rounded `[🔍 field ✕]` pill under the header; hidden until opened. */
+    private fun buildSearchRow(): View {
+        val card = activity.tawcCard().apply {
+            radius = activity.tawcButtonSizePx() / 2f
+            visibility = View.GONE
+        }
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad * 3 / 4, 0, 0, 0)
+        }
+        val glyph = (20 * density).toInt()
+        row.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_search)
+            alpha = 0.7f
+        }, LinearLayout.LayoutParams(glyph, glyph).also { it.marginEnd = pad / 2 })
+        row.addView(searchField, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val button = activity.tawcButtonSizePx()
+        row.addView(
+            activity.plainIconButton(R.drawable.ic_close, activity.getString(R.string.action_close_search)) {
+                closeSearch()
+            },
+            LinearLayout.LayoutParams(button, button),
+        )
+        card.addView(row)
+        return card
     }
 
     fun onResume() {
@@ -182,13 +255,41 @@ internal class AppsPane(
         uiScope.cancel()
     }
 
-    fun showSoftKeyboard() {
+    /** Show the search field, focused with the IME up; [initial] seeds it. */
+    fun openSearch(initial: CharSequence = "") {
+        searchRow.visibility = View.VISIBLE
+        if (initial.isNotEmpty()) {
+            searchField.append(initial)
+        }
         searchField.requestFocus()
-        // Post: on first show the field isn't attached to the window yet.
+        // Post: on first show the field isn't laid out yet.
         searchField.post {
             val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             imm?.showSoftInput(searchField, InputMethodManager.SHOW_IMPLICIT)
         }
+    }
+
+    /** Clear and hide the search field. Returns whether it was open (Back). */
+    fun closeSearch(): Boolean {
+        if (!isSearchOpen) return false
+        val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(searchField.windowToken, 0)
+        searchField.clearFocus()
+        searchRow.visibility = View.GONE
+        searchField.text.clear()
+        return true
+    }
+
+    /**
+     * A key nothing focused consumed (hardware keyboard): a printable
+     * character opens search with it, launcher-style.
+     */
+    fun onUnhandledKey(event: KeyEvent): Boolean {
+        if (isSearchOpen || event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        val c = event.unicodeChar
+        if (c == 0 || Character.isISOControl(c) || Character.isWhitespace(c)) return false
+        openSearch(String(Character.toChars(c)))
+        return true
     }
 
     /** This pane's group of the home ⋮ menu. */
@@ -244,12 +345,12 @@ internal class AppsPane(
     }
 
     private fun renderList() {
-        listColumn.removeAllViews()
+        adapter.submit(filteredEntries, hiddenIds())
         if (filteredEntries.isEmpty() && allEntries.isNotEmpty()) {
             val q = searchField.text.toString().trim()
             emptyView.text = if (q.isEmpty()) {
                 // Every entry is hidden (show-hidden off): keep the
-                // no-apps message but say why the list is empty.
+                // no-apps message but say why the grid is empty.
                 activity.getString(R.string.launcher_no_launchable_apps) + "\n" +
                     activity.getString(R.string.launcher_hidden_count_hint, hiddenCount())
             } else {
@@ -259,13 +360,6 @@ internal class AppsPane(
             return
         }
         emptyView.visibility = if (allEntries.isEmpty()) View.VISIBLE else View.GONE
-        val hidden = hiddenIds()
-        val rowPad = (12 * density).toInt()
-        val rowMargin = (6 * density).toInt()
-        for (entry in filteredEntries) {
-            val row = buildRow(entry, rowPad, dimmed = entry.id in hidden)
-            listColumn.addView(row, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = rowMargin))
-        }
     }
 
     /**
@@ -355,57 +449,62 @@ internal class AppsPane(
         applyFilter()
     }
 
-    private fun buildRow(entry: LauncherEntry, rowPad: Int, dimmed: Boolean = false): View {
-        val card = activity.tawcCard().apply {
-            isClickable = true
-            isFocusable = true
-            isLongClickable = true
-            if (dimmed) alpha = 0.5f
-            setOnClickListener { launchEntry(entry) }
-            setOnLongClickListener { showEntryMenu(entry); true }
-        }
-        val row = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(rowPad, rowPad, rowPad, rowPad)
+    private class Cell(val root: LinearLayout, val icon: ImageView, val label: TextView) :
+        RecyclerView.ViewHolder(root)
+
+    /** Grid cells: icon over a one-line, end-ellipsized name. */
+    private inner class EntryAdapter : RecyclerView.Adapter<Cell>() {
+        private var entries: List<LauncherEntry> = emptyList()
+        private var hidden: Set<String> = emptySet()
+
+        fun submit(entries: List<LauncherEntry>, hidden: Set<String>) {
+            this.entries = entries
+            this.hidden = hidden
+            notifyDataSetChanged()
         }
 
-        val icon = ImageView(activity).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            // Pre-set the layout size so rows without an icon don't
-            // shift their text leftwards. ImageView default is
-            // WRAP_CONTENT which collapses to 0 when the drawable is
-            // null.
-            adjustViewBounds = false
-        }
-        iconLoader.load(
-            entry.iconPath,
-            icon,
-            if (entry.terminal) R.drawable.ic_terminal_fallback else R.drawable.ic_app_fallback,
-        )
-        row.addView(
-            icon,
-            LinearLayout.LayoutParams(iconSizePx, iconSizePx).also {
-                it.marginEnd = rowPad
-            },
-        )
+        override fun getItemCount() = entries.size
 
-        val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(TextView(activity).apply {
-            text = entry.name.ifEmpty { entry.id }
-            textSize = 16f
-        })
-        if (entry.comment.isNotEmpty()) {
-            column.addView(TextView(activity).apply {
-                text = entry.comment
-                textSize = 13f
-                alpha = 0.7f
-            })
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Cell {
+            val cellPad = (8 * density).toInt()
+            val root = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(cellPad, cellPad, cellPad, cellPad)
+                isClickable = true
+                isFocusable = true
+                isLongClickable = true
+                val ripple = TypedValue()
+                activity.theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
+                setBackgroundResource(ripple.resourceId)
+                layoutParams = RecyclerView.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
+            val icon = ImageView(activity).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+            root.addView(icon, LinearLayout.LayoutParams(iconSizePx, iconSizePx).also { it.bottomMargin = cellPad * 3 / 4 })
+            val label = TextView(activity).apply {
+                textSize = 12f
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            root.addView(label, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            return Cell(root, icon, label)
         }
-        row.addView(column, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        card.addView(row)
-        return card
+        override fun onBindViewHolder(cell: Cell, position: Int) {
+            val entry = entries[position]
+            val name = entry.name.ifEmpty { entry.id }
+            cell.label.text = name
+            cell.root.contentDescription = name
+            cell.root.alpha = if (entry.id in hidden) 0.5f else 1f
+            cell.root.setOnClickListener { launchEntry(entry) }
+            cell.root.setOnLongClickListener { showEntryMenu(entry); true }
+            iconLoader.load(
+                entry.iconPath,
+                cell.icon,
+                if (entry.terminal) R.drawable.ic_terminal_fallback else R.drawable.ic_app_fallback,
+            )
+        }
     }
 
     private fun launchTop() {
@@ -415,7 +514,7 @@ internal class AppsPane(
 
     /**
      * Fire-and-forget launch via [EntryLauncher]; failures surface from
-     * there ([LaunchErrorActivity]). The query is cleared and the IME
+     * there ([LaunchErrorActivity]). Search is closed and the IME
      * dropped: the app's window (or the terminal) comes forward, and
      * this pane is what the user returns to.
      */
@@ -424,18 +523,23 @@ internal class AppsPane(
         if (now - lastLaunchMs < LAUNCH_DEBOUNCE_MS) return
         lastLaunchMs = now
         EntryLauncher.launch(activity.applicationContext, installation, entry)
-        searchField.text.clear()
-        searchField.clearFocus()
-        val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.hideSoftInputFromWindow(searchField.windowToken, 0)
+        closeSearch()
     }
 
     private companion object {
-        /** Square icon edge in dp. ~48 is the standard list-row icon size
-         *  per Material guidelines; bumped to 56 here because chroot apps
-         *  rarely have icon sets that look crisp at the smaller size and
-         *  the extra display surface helps with brand recognition. */
-        const val ICON_SIZE_DP = 56f
+        /** Square icon edge in dp, about a phone launcher's. */
+        const val ICON_SIZE_DP = 52f
+
+        /** Header height: a Material top app bar, roomier than the
+         *  terminal's 48dp tab row. */
+        const val HEADER_HEIGHT_DP = 64
+
+        /** Columns: as many [CELL_MIN_WIDTH_DP] cells as fit, at least [MIN_COLUMNS]. */
+        const val CELL_MIN_WIDTH_DP = 88
+        const val MIN_COLUMNS = 3
+
+        /** Grid bottom padding: FAB (56) + its margins (16 + 16). */
+        const val BOTTOM_CLEARANCE_DP = 88
 
         const val LAUNCH_DEBOUNCE_MS = 500L
     }

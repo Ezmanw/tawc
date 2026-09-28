@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.ContextThemeWrapper
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.Menu
 import android.view.View
 import android.view.inputmethod.InputMethodManager
@@ -61,7 +62,7 @@ import me.phie.tawc.ui.verticalLp
  * - the terminal ([TerminalPane]) or the app list ([AppsPane]) once it
  *   is, per [Settings.homePane], with a FAB toggling between them.
  *
- * Each pane supplies its own top row (≡, title or tabs or search, ⋮);
+ * Each pane supplies its own top row (≡, title or tabs, ⋮);
  * the drawer switches the open distro and starts a new install. The ⋮
  * popup is assembled here from per-distro, pane and app items. The
  * compositor starts lazily when a user launches a rootfs command, so a
@@ -130,7 +131,9 @@ class MainActivity : AppCompatActivity() {
         // (added later, so consulted first) still closes on Back.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (open != null) {
+                if ((pane as? Pane.Apps)?.apps?.closeSearch() == true) {
+                    return
+                } else if (open != null) {
                     // Shells and the app list stay as they are.
                     moveTaskToBack(true)
                 } else {
@@ -191,6 +194,12 @@ class MainActivity : AppCompatActivity() {
             keyboardOnShow = true
             consumeCommand(intent)
         }
+    }
+
+    /** Typing with nothing focused opens the apps pane's search. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if ((pane as? Pane.Apps)?.apps?.onUnhandledKey(event) == true) return true
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -268,7 +277,6 @@ class MainActivity : AppCompatActivity() {
             if (keyboardOnShow) {
                 when (next) {
                     is Pane.Terminal -> next.terminal.showSoftKeyboard()
-                    is Pane.Apps -> next.apps.showSoftKeyboard()
                     else -> Unit
                 }
             }
@@ -311,6 +319,11 @@ class MainActivity : AppCompatActivity() {
                     override fun openDrawer() = screen.openDrawer()
                     override fun showMenu(anchor: View) = showOverflowMenu(anchor)
                     override fun openEditor(intent: Intent) = editEntry.launch(intent)
+                    override fun onGridScrolled(down: Boolean) {
+                        // Same condition updateFab shows it under.
+                        if (terminalMethod(open) == null) return
+                        if (down) fab.hide() else fab.show()
+                    }
                 }),
             )
         }
@@ -434,7 +447,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---- intro / info panes ------------------------------------------------
 
-    /** `[≡] <title> [⋮]`, the same height as the terminal/search rows. */
+    /** `[≡] <title> [⋮]`, the same height as the terminal's tab row. */
     private fun plainTopRow(title: CharSequence): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL

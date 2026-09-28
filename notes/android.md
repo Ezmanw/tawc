@@ -126,15 +126,15 @@ the compositor or install packages.
 Opening the app lands in a shell, termux-style. `MainActivity`
 (`singleTask`, `configChanges` for rotation, `adjustResize`) hosts
 exactly one pane for the one open distro, plus a FAB. Panes are plain
-view controllers, no Fragments; each supplies its own top row (same
-height, `paneTopRowHeightPx`), so there is no toolbar.
+view controllers, no Fragments; each supplies its own top row (48dp
+`paneTopRowHeightPx`, except the apps header's 64dp), so there is no toolbar.
 
 | Pane | When | Top row |
 |---|---|---|
 | Intro | no installs | `[≡] TAWC [⋮]`, logo, blurb, accent Install |
 | Info (`DistroInfoView`) | open distro not READY | `[≡] <label> [⋮]`; state row links to the live op log |
 | Terminal (`terminal/TerminalPane`) | READY + tawcroot, pane = terminal | `[≡][tabs… +][⋮]` (dark `TerminalTabBar`) |
-| Apps (`launcher/AppsPane`) | READY otherwise | `[≡][Search <label>][⋮]` |
+| Apps (`launcher/AppsPane`) | READY otherwise | `[≡] <label> [🔍][⋮]`; 🔍 opens a search field below |
 
 - **Open distro:** `Settings.openDistroId` (pref `open_distro`; the test
   store starts null). Always read through `OpenDistro.resolve` (stored
@@ -147,7 +147,8 @@ height, `paneTopRowHeightPx`), so there is no toolbar.
   prompt) and the debug `home-pane` action. The info pane never
   overwrites it. A command launch forces the terminal up without
   writing it.
-- **FAB:** apps pane → terminal (only when possible); pending terminal →
+- **FAB:** apps pane → terminal (only when possible; hides while the
+  grid scrolls down, returns on scroll up); pending terminal →
   apps (`ic_apps`, lifted above the extra keys); in-use terminal → none
   (⋮ → Apps).
 - **⋮:** one `PopupMenu` per screen, top to bottom: pane items (apps:

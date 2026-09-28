@@ -314,7 +314,7 @@ private fun Context.controlTint(): ColorStateList {
 
 /**
  * Card / panel surface used for distro rows on the home screen, the
- * task manager's per-install group cards, the launcher's app rows, and
+ * task manager's per-install group cards, the launcher's search field, and
  * the operation log panel. Filled with [R.color.tawc_card_bg] (a
  * slight contrast against the window surface) and no stroke — the
  * fill alone is what separates the card from the background.

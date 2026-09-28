@@ -65,11 +65,11 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
   `UserRootfsSession`, which holds a session reason for the process's lifetime.
 - **launcher/AppsPane.kt** -- Per-distro app list on the home screen. Reads the rootfs's
   `.desktop` files via [`NativeBridge.nativeLauncherScan`][launcher.rs] (Rust does the
-  scan + parsing), shows a type-to-filter list with each entry's icon, and
+  scan + parsing), shows an icon grid with an optional search filter, and
   launches through `EntryLauncher` (`UserRootfsSession.runInside` on a
   process-wide `LAUNCH_SCOPE`, so nothing on screen owns the program). `Enter`
   launches the top filtered match.
-- **launcher/IconLoader.kt** -- Async PNG icon decoder for launcher rows.
+- **launcher/IconLoader.kt** -- Async PNG icon decoder for launcher cells.
   Caches `path → Bitmap` in a byte-bounded `LruCache` (an eighth of the heap,
   floored at ~32 icons) so re-renders on filter keystrokes don't re-decode
   without letting a big distro's icon set grow unbounded;
