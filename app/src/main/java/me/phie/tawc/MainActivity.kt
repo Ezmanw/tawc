@@ -282,11 +282,12 @@ class MainActivity : AppCompatActivity() {
             val next = buildPane(kind, inst, command?.second)
             pane = next
             screen.body.addView(next.view, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            if (keyboardOnShow) {
-                when (next) {
-                    is Pane.Terminal -> next.terminal.showSoftKeyboard()
-                    else -> Unit
-                }
+            if (keyboardOnShow && next is Pane.Terminal) {
+                next.terminal.showSoftKeyboard()
+            } else {
+                // The removed pane's focused view doesn't take the IME with it.
+                getSystemService(InputMethodManager::class.java)
+                    ?.hideSoftInputFromWindow(screen.drawer.windowToken, 0)
             }
         }
         keyboardOnShow = false
