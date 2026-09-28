@@ -55,7 +55,8 @@ import java.io.IOException
  * pane spawns a *pending* shell — no session hold, no notification, no
  * tab strip (the distro label sits there), screen may sleep. The first
  * input that reaches it ([onKeyDown] / [onCodePoint] / a paste)
- * promotes it to an ordinary tab. A pending shell that dies (e.g. a
+ * promotes it to an ordinary tab. The only tab goes back to pending
+ * when it's idle again ([maybeDemote]). A pending shell that dies (e.g. a
  * broken `chsh`) stays on screen; a tap or Enter respawns. The tab
  * bar has no `+` while pending.
  *
@@ -86,6 +87,13 @@ internal class TerminalPane(
     private var activeSession: TerminalSession? = null
     private var fontSizePx = (DEFAULT_FONT_SIZE_DP * density).toInt()
     private var detached = false
+
+    // Input tracking for [maybeDemote] (see ShellIdle.screenIsFresh):
+    // where the pending shell got its first input (until Enter), and
+    // whether / where the current input line has been typed into.
+    private var promotedAt: ShellIdle.Anchor? = null
+    private var lineDirty = false
+    private var lineStart: ShellIdle.Anchor? = null
 
     /** Black column: tab bar, terminal, extra keys. */
     val view: LinearLayout
@@ -229,11 +237,51 @@ internal class TerminalPane(
     private fun promotePending() {
         val session = activeSession ?: return
         if (!isPending || !session.isRunning || TerminalSessions.pending(distroId) !== session) return
+        promotedAt = session.emulator?.let { ShellIdle.anchorOf(it) }
         TerminalSessions.promote(distroId)
         showTabs()
         tabBar.addTab(labelFor(session, 0))
         tabBar.setSelected(0)
         host.onTerminalStateChanged()
+    }
+
+    /**
+     * Back to pending when the only tab (not a command tab) shows just
+     * an untouched prompt — input typed then erased, or `clear` — and
+     * nothing else runs in its session: no foreground program, no
+     * background job. Killing it on a pane switch then loses only cwd,
+     * env and history, which a cleared screen says the user is done with.
+     */
+    private fun maybeDemote(session: TerminalSession) {
+        if (detached || session !== activeSession || session.mSessionName != null || !session.isRunning) return
+        val tabs = TerminalSessions.list(distroId)
+        if (tabs.size != 1 || tabs[0] !== session) return
+        val emulator = session.emulator ?: return
+        if (!ShellIdle.screenIsFresh(emulator, promotedAt, lineDirty, lineStart)) return
+        if (!ShellIdle.aloneInSession(session.pid)) return
+        if (!TerminalSessions.demote(distroId, session)) return
+        resetInputTracking(dirty = false)
+        tabBar.removeTab(0)
+        showPending(session)
+        host.onTerminalStateChanged()
+    }
+
+    /** Call before input reaches the active session. */
+    private fun noteInput(enter: Boolean) {
+        if (enter) {
+            resetInputTracking(dirty = false)
+        } else if (!lineDirty) {
+            lineDirty = true
+            lineStart = activeSession?.emulator?.let { ShellIdle.anchorOf(it) }
+        }
+    }
+
+    /** [dirty]: the line's state is unknown (e.g. another tab), so only
+     *  an Enter makes it count as empty again. */
+    private fun resetInputTracking(dirty: Boolean) {
+        promotedAt = null
+        lineDirty = dirty
+        lineStart = null
     }
 
     /** Dead or failed pending shell: replace it with a fresh one. */
@@ -303,6 +351,7 @@ internal class TerminalPane(
     /** Attach the session at [index] (registry order == bar order). */
     private fun selectTab(index: Int) {
         val session = TerminalSessions.list(distroId).getOrNull(index) ?: return
+        if (session !== activeSession) resetInputTracking(dirty = true)
         TerminalSessions.setSelected(distroId, index)
         activeSession = session
         tabBar.setSelected(index)
@@ -413,7 +462,10 @@ internal class TerminalPane(
             }
             return true
         }
-        if (!e.isSystem && !KeyEvent.isModifierKey(keyCode)) promotePending()
+        if (!e.isSystem && !KeyEvent.isModifierKey(keyCode)) {
+            promotePending()
+            noteInput(enter = keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)
+        }
         return false
     }
 
@@ -436,6 +488,7 @@ internal class TerminalPane(
 
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
         promotePending()
+        noteInput(enter = codePoint == '\r'.code || codePoint == '\n'.code)
         return false
     }
 
@@ -448,7 +501,9 @@ internal class TerminalPane(
     // accumulating transcript via their pty reader threads.
 
     override fun onTextChanged(changedSession: TerminalSession) {
-        if (changedSession === activeSession) terminalView.onScreenUpdated()
+        if (changedSession !== activeSession) return
+        terminalView.onScreenUpdated()
+        maybeDemote(changedSession)
     }
 
     // A prompt can set the title twice in a row (a distro
@@ -485,10 +540,16 @@ internal class TerminalPane(
         val text = item.coerceToText(activity).toString()
         if (text.isEmpty()) return
         promotePending()
+        // A pasted newline runs something: no longer the untouched screen.
+        promotedAt = null
+        noteInput(enter = false)
         terminalView.currentSession?.emulator?.paste(text)
     }
 
-    override fun onBell(session: TerminalSession) {}
+    // Backspace on an already-empty line only rings the bell.
+    override fun onBell(session: TerminalSession) {
+        maybeDemote(session)
+    }
 
     override fun onColorsChanged(session: TerminalSession) {}
 

@@ -3,6 +3,7 @@ mod ando;
 mod apps;
 mod cpu_graphics;
 mod gfxstream;
+mod home_terminal;
 mod launcher;
 mod lazy_compositor;
 mod libhybris;

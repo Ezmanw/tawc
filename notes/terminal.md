@@ -143,6 +143,32 @@ every `TerminalView` write path except autofill; the extra keys route
 through them) or a paste. Output alone (bashrc, the prompt) doesn't
 count. `+` and command tabs are in use from birth.
 
+**Back to pending.** The only tab (not a command tab) is demoted
+(`TerminalSessions.demote`, hold released) as soon as it is an untouched
+prompt again and nothing else runs in its session — checked on each
+output chunk and bell (`ShellIdle`, unit-tested against a real
+emulator):
+
+- *Screen:* not the alternate screen, nothing at or after the cursor,
+  and either the cursor is back where the pending shell got its first
+  input with no Enter since (typed, then erased), or the screen is
+  cleared — no scrollback, only a one-line prompt at the top (`clear`;
+  Ctrl-L keeps scrollback, so it doesn't count). The screen can't tell
+  a prompt from unsent input, so the pane tracks input: after `clear`
+  the line must be untouched since the last Enter, or erased back to
+  where typing started. A tab switch leaves the line state unknown
+  until the next Enter.
+- *Session:* the shell is the only process whose session id is its pid
+  (`/proc/*/stat`). A foreground program (even one that cleared the
+  screen), a background job or a `nohup` child keeps it in use;
+  `setsid`'d processes survive the shell anyway (stray tail).
+
+Demoting drops cwd, env and history if the shell is later killed; a
+cleared screen says the user is done with them. Multi-line prompts,
+resizes and output above the prompt just keep it in use.
+`home_terminal::test_terminal_returns_to_pending_when_idle` drives the
+real shell through each case.
+
 | | Pending | In use |
 |---|---|---|
 | `SessionHolds` | none — no service, no notification | `Reason.Terminal` |
@@ -152,6 +178,7 @@ count. `+` and command tabs are in use from birth.
 | Pane / distro switch | killed | keep running, pane detaches |
 | `MainActivity.onDestroy` | killed (recreation reattaches) | untouched; notification Exit kills |
 | Uninstall started | killed (`InstallationService.startUninstall`) | swept by the uninstall |
+| Only tab idle again (above) | — | back to pending |
 | Shell exits / × on last tab | transcript stays, tap/Enter respawns | tab closes; last one → `finishAndRemoveTask` |
 
 The recents card no longer kills shells: in-use shells outlive a swipe

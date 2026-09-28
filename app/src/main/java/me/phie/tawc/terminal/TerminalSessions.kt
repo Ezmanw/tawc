@@ -78,6 +78,20 @@ internal object TerminalSessions {
         return session
     }
 
+    /**
+     * The reverse of [promote]: [session], [id]'s only tab, is idle
+     * again (ShellIdle) — make it the pending shell and drop its hold.
+     * False (no change) when it isn't the only tab.
+     */
+    @Synchronized
+    fun demote(id: String, session: TerminalSession): Boolean {
+        val tabs = entries[id]?.sessions ?: return false
+        if (tabs.size != 1 || tabs[0] !== session) return false
+        remove(id, session)
+        setPending(id, session)
+        return true
+    }
+
     /** Drop [id]'s pending shell and kill it. */
     @Synchronized
     fun killPending(id: String) {

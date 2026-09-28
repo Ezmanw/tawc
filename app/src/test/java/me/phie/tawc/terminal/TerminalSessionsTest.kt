@@ -186,4 +186,17 @@ class TerminalSessionsTest {
         assertTrue(TerminalSessions.pendingPids().isEmpty())
         TerminalSessions.killPending(id)
     }
+
+    @Test
+    fun demoteOnlyTheSoleTabBackToPendingWithoutHold() {
+        val id = "demote"
+        val s = populated(id, 2)
+        assertTrue(!TerminalSessions.demote(id, s[0]))
+        TerminalSessions.remove(id, s[1])
+        assertTrue(TerminalSessions.demote(id, s[0]))
+        assertTrue(TerminalSessions.list(id).isEmpty())
+        assertSame(s[0], TerminalSessions.pending(id))
+        assertEquals(0, terminalHolds(id))
+        TerminalSessions.killPending(id)
+    }
 }
