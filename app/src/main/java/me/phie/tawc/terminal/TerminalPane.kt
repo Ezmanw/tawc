@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.util.Log
+import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
@@ -13,6 +14,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.res.ResourcesCompat
 import com.termux.shared.termux.extrakeys.ExtraKeysConstants
 import com.termux.shared.termux.extrakeys.ExtraKeysInfo
 import com.termux.shared.termux.extrakeys.ExtraKeysView
@@ -24,6 +26,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import me.phie.tawc.R
+import me.phie.tawc.Settings
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.TawcrootMethod
@@ -89,7 +92,7 @@ internal class TerminalPane(
     private val tabBar: TerminalTabBar
     // Volatile: [focusedTty] reads them off the main thread.
     @Volatile private var activeSession: TerminalSession? = null
-    private var fontSizePx = (DEFAULT_FONT_SIZE_DP * density).toInt()
+    private var fontSizePx = fontSizePx()
     @Volatile private var detached = false
 
     // For [maybeDemote]: where the pending shell got its first input;
@@ -122,6 +125,9 @@ internal class TerminalPane(
         terminalView = TerminalView(activity, null).apply {
             setTerminalViewClient(this@TerminalPane)
             setTextSize(fontSizePx)
+            // Bundled so glyph widths don't depend on the OEM's
+            // "monospace" (a non-mono one gets per-glyph stretched).
+            ResourcesCompat.getFont(activity, R.font.hack_regular)?.let { setTypeface(it) }
             setBackgroundColor(Color.BLACK)
             // Key events only reach the view when it can hold focus —
             // termux sets this in XML (activity_termux.xml); the view
@@ -197,6 +203,12 @@ internal class TerminalPane(
     }
 
     fun onResume() {
+        // Terminal scale may have changed in settings.
+        val size = fontSizePx()
+        if (size != fontSizePx) {
+            fontSizePx = size
+            terminalView.setTextSize(size)
+        }
         screenUpdated()
     }
 
@@ -405,23 +417,18 @@ internal class TerminalPane(
         }
     }
 
-    private fun changeFontSize(increase: Boolean) {
-        val step = (FONT_SIZE_STEP_DP * density).toInt().coerceAtLeast(1)
-        val min = (MIN_FONT_SIZE_DP * density).toInt()
-        val max = (MAX_FONT_SIZE_DP * density).toInt()
-        fontSizePx = (fontSizePx + if (increase) step else -step).coerceIn(min, max)
-        terminalView.setTextSize(fontSizePx)
+    /** sp so it follows the system font size; see [Settings.terminalScale]. */
+    private fun fontSizePx(): Int {
+        val sp = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP, DEFAULT_FONT_SIZE_SP, activity.resources.displayMetrics,
+        )
+        return (sp * Settings.terminalScale).toInt().coerceAtLeast(1)
     }
 
     // ---- TerminalViewClient --------------------------------------------
 
-    override fun onScale(scale: Float): Float {
-        if (scale < 0.9f || scale > 1.1f) {
-            changeFontSize(increase = scale > 1f)
-            return 1.0f
-        }
-        return scale
-    }
+    // Pinch-zoom disabled: size comes from the terminal scale setting.
+    override fun onScale(scale: Float): Float = 1.0f
 
     override fun onSingleTapUp(e: MotionEvent) {
         if (pendingIsDead()) respawnPending()
@@ -646,7 +653,7 @@ internal class TerminalPane(
         const val TAG = "tawc-terminal"
         const val TITLE_SETTLE_MS = 150L
         const val TRANSCRIPT_ROWS = 4000
-        const val DEFAULT_FONT_SIZE_DP = 13f
+        const val DEFAULT_FONT_SIZE_SP = 13f
         // Termux's default extra-keys config and per-row height
         // (TermuxPropertyConstants.DEFAULT_IVALUE_EXTRA_KEYS and the
         // 37.5dp terminal_toolbar_view_pager in activity_termux.xml).
@@ -655,8 +662,5 @@ internal class TerminalPane(
                 "['TAB','CTRL','ALT','LEFT','DOWN','RIGHT','PGDN']]"
         const val EXTRA_KEYS_STYLE = "default"
         const val EXTRA_KEYS_ROW_HEIGHT_DP = 37.5f
-        const val FONT_SIZE_STEP_DP = 1f
-        const val MIN_FONT_SIZE_DP = 7f
-        const val MAX_FONT_SIZE_DP = 36f
     }
 }

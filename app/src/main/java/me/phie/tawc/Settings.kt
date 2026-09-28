@@ -23,6 +23,7 @@ object Settings {
     private const val KEY_GRAPHICS_BACKEND = "graphics_backend"
     private const val KEY_TINT_BUFFERS_BY_TYPE = "tint_buffers_by_type"
     private const val KEY_OUTPUT_SCALE = "output_scale"
+    private const val KEY_TERMINAL_SCALE = "terminal_scale"
     private const val KEY_XWAYLAND = "xwayland"
     private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
     private const val KEY_OPEN_DISTRO = "open_distro"
@@ -39,6 +40,10 @@ object Settings {
     const val MAX_OUTPUT_SCALE = 4.0f
     const val OUTPUT_SCALE_STEP = 0.25f
     const val DEFAULT_OUTPUT_SCALE = 2.0f
+    const val MIN_TERMINAL_SCALE = 0.5f
+    const val MAX_TERMINAL_SCALE = 2.0f
+    const val TERMINAL_SCALE_STEP = 0.1f
+    const val DEFAULT_TERMINAL_SCALE = 1.0f
     const val DEFAULT_REMOTE_RELAY = "https://sshyeet.com"
     const val REMOTE_IDLE_SECONDS = 5 * 60L
     const val REMOTE_MODE_LOCAL = "local"
@@ -51,6 +56,7 @@ object Settings {
         var graphicsBackend: GraphicsBackend
         var tintBuffersByType: Boolean
         var outputScale: Float
+        var terminalScale: Float
         var xwayland: Boolean
         var gtk3BrokenMenusWorkaround: Boolean
         var openDistroId: String?
@@ -84,6 +90,11 @@ object Settings {
             get() = snapOutputScale(prefs.getFloat(KEY_OUTPUT_SCALE, DEFAULT_OUTPUT_SCALE))
             set(value) {
                 prefs.edit { putFloat(KEY_OUTPUT_SCALE, snapOutputScale(value)) }
+            }
+        override var terminalScale: Float
+            get() = snapTerminalScale(prefs.getFloat(KEY_TERMINAL_SCALE, DEFAULT_TERMINAL_SCALE))
+            set(value) {
+                prefs.edit { putFloat(KEY_TERMINAL_SCALE, snapTerminalScale(value)) }
             }
 
         override var xwayland: Boolean
@@ -158,6 +169,8 @@ object Settings {
         @Volatile override var tintBuffersByType: Boolean = DEFAULT_TINT_BUFFERS_BY_TYPE
         @Volatile override var outputScale: Float = DEFAULT_OUTPUT_SCALE
             set(value) { field = snapOutputScale(value) }
+        @Volatile override var terminalScale: Float = DEFAULT_TERMINAL_SCALE
+            set(value) { field = snapTerminalScale(value) }
         @Volatile override var xwayland: Boolean = true
         @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
         @Volatile override var openDistroId: String? = null
@@ -217,6 +230,11 @@ object Settings {
     var outputScale: Float
         get() = requireStore().outputScale
         set(value) { requireStore().outputScale = snapOutputScale(value) }
+
+    /** Multiplier on the terminal's sp text size (so it also follows system font size). */
+    var terminalScale: Float
+        get() = requireStore().terminalScale
+        set(value) { requireStore().terminalScale = snapTerminalScale(value) }
 
     /**
      * Enable the compositor-owned Xwayland server for X11 applications.
@@ -298,6 +316,17 @@ object Settings {
 
     fun formatOutputScale(value: Float): String {
         return String.format(java.util.Locale.US, "%.2f", snapOutputScale(value))
+    }
+
+    fun snapTerminalScale(value: Float): Float {
+        if (!value.isFinite()) return DEFAULT_TERMINAL_SCALE
+        val clamped = value.coerceIn(MIN_TERMINAL_SCALE, MAX_TERMINAL_SCALE)
+        val steps = ((clamped - MIN_TERMINAL_SCALE) / TERMINAL_SCALE_STEP).toIntWithRound()
+        return MIN_TERMINAL_SCALE + steps * TERMINAL_SCALE_STEP
+    }
+
+    fun formatTerminalScale(value: Float): String {
+        return String.format(java.util.Locale.US, "%.1f", snapTerminalScale(value))
     }
 
     private fun Float.toIntWithRound(): Int =

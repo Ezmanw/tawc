@@ -64,26 +64,18 @@ class SettingsActivity : AppCompatActivity() {
 
         distroSlot = FrameLayout(this)
         column.addView(distroSlot, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        column.addView(buildScaleCard(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        // The magenta SHM tint ships in release on purpose: it's a
+        // supported diagnostic for GPU-fallback issues on user devices,
+        // not a debug-build-only tool. Only the default differs per
+        // build type (BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT: on in
+        // debug, off in release).
         column.addView(
-            buildSectionCard(getString(R.string.settings_graphics_driver), buildGraphicsBackendGroup()),
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
-        )
-        // "Debug rendering" ships in release on purpose: the magenta
-        // SHM tint is a supported diagnostic for GPU-fallback issues
-        // on user devices, not a debug-build-only tool. Only the
-        // default differs per build type
-        // (BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT: on in debug, off
-        // in release).
-        column.addView(
-            buildSectionCard(getString(R.string.settings_debug_rendering), buildTintBuffersCheckbox()),
+            buildSectionCard(getString(R.string.settings_graphics_driver), buildGraphicsSettings()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
         column.addView(
             buildSectionCard(getString(R.string.settings_compatibility), buildCompatibilitySettings()),
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
-        )
-        column.addView(
-            buildOutputScaleCard(),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
         column.addView(
@@ -212,6 +204,14 @@ class SettingsActivity : AppCompatActivity() {
         return group
     }
 
+    private fun buildGraphicsSettings(): android.view.View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(buildGraphicsBackendGroup(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(buildTintBuffersCheckbox(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+    }
+
     private fun buildTintBuffersCheckbox(): CheckBox {
         val cardPad = (12 * resources.displayMetrics.density).toInt()
         return CheckBox(this).apply {
@@ -309,44 +309,74 @@ class SettingsActivity : AppCompatActivity() {
         return column
     }
 
-    private fun buildOutputScaleCard(): android.view.View {
+    private fun buildScaleCard(): android.view.View {
         val cardPad = (12 * resources.displayMetrics.density).toInt()
-        val min = Settings.MIN_OUTPUT_SCALE
-        val step = Settings.OUTPUT_SCALE_STEP
-        val steps = ((Settings.MAX_OUTPUT_SCALE - min) / step).toInt()
-        val title = TextView(this).apply {
-            textSize = 16f
-            setTypeface(typeface, Typeface.BOLD)
-            text = getString(R.string.settings_display_scale, Settings.formatOutputScale(Settings.outputScale))
-        }
-        val slider = SeekBar(this).apply {
-            max = steps
-            progress = ((Settings.outputScale - min) / step).toInt()
-            setPadding(cardPad, cardPad / 2, cardPad, cardPad / 2)
-        }
-        slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
-                val scale = Settings.snapOutputScale(min + progress * step)
-                title.text = getString(R.string.settings_display_scale, Settings.formatOutputScale(scale))
-                if (fromUser) {
-                    Settings.outputScale = scale
-                    NativeBridge.nativeSetOutputScale(scale)
-                }
-            }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
-            override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
-        })
         val card = tawcCard()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(cardPad, cardPad, cardPad, cardPad)
             clipToPadding = false
-            addView(title, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(buildTerminalScaleSlider(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(buildOutputScaleSlider(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         card.addView(column)
         return card
+    }
+
+    private fun buildOutputScaleSlider(): android.view.View = buildScaleSlider(
+        R.string.settings_gui_scale,
+        Settings.MIN_OUTPUT_SCALE, Settings.MAX_OUTPUT_SCALE, Settings.OUTPUT_SCALE_STEP,
+        Settings.outputScale, Settings::snapOutputScale, Settings::formatOutputScale,
+    ) { scale ->
+        Settings.outputScale = scale
+        NativeBridge.nativeSetOutputScale(scale)
+    }
+
+    /** Applied by the terminal pane on resume. */
+    private fun buildTerminalScaleSlider(): android.view.View = buildScaleSlider(
+        R.string.settings_terminal_scale,
+        Settings.MIN_TERMINAL_SCALE, Settings.MAX_TERMINAL_SCALE, Settings.TERMINAL_SCALE_STEP,
+        Settings.terminalScale, Settings::snapTerminalScale, Settings::formatTerminalScale,
+    ) { Settings.terminalScale = it }
+
+    private fun buildScaleSlider(
+        titleRes: Int,
+        min: Float,
+        maxScale: Float,
+        step: Float,
+        current: Float,
+        snap: (Float) -> Float,
+        format: (Float) -> String,
+        onChange: (Float) -> Unit,
+    ): android.view.View {
+        val cardPad = (12 * resources.displayMetrics.density).toInt()
+        val steps = ((maxScale - min) / step + 0.5f).toInt()
+        val title = TextView(this).apply {
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+            text = getString(titleRes, format(current))
+        }
+        val slider = SeekBar(this).apply {
+            max = steps
+            progress = ((current - min) / step + 0.5f).toInt()
+            setPadding(cardPad, cardPad / 2, cardPad, cardPad / 2)
+        }
+        slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                val scale = snap(min + progress * step)
+                title.text = getString(titleRes, format(scale))
+                if (fromUser) onChange(scale)
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
+        })
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipToPadding = false
+            addView(title, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(slider, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
     }
 
     companion object {

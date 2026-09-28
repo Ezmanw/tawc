@@ -27,6 +27,12 @@ API to hold the viewport when scrolled back (`topRow -= scrollCounter`,
 clamped to the transcript); input/paste snaps back to the bottom.
 Rotation, font size and tab switches still reset to the bottom.
 
+Font: bundled Hack v3.003 (`res/font/hack_regular.ttf`, from the upstream release zip) rather than
+`Typeface.MONOSPACE`, whose OEM mapping may not be monospace (termux's
+renderer then stretches mismatched glyphs per cell). Size is 13sp (so it
+follows system font size) times the "Terminal scale" setting, reapplied
+on resume. Pinch-zoom is disabled.
+
 Both modules are **Apache-2.0** (the explicit exception in termux-app's
 `LICENSE.md`; they descend from jackpal's Android-Terminal-Emulator).
 Termux packages/bootstrap are not involved at all; the shell is one

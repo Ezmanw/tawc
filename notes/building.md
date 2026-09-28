@@ -702,7 +702,8 @@ commit the result. Inputs, all read from the working tree:
   for Maven artifacts, mapped to licenses by the `GRADLE_LICENSES`
   table in the script
 - `licenses/` — checked-in texts for the few artifacts whose license
-  lives only in a POM or on a project website
+  lives only in a POM or on a project website, or that are checked in
+  directly (the Hack terminal font)
 
 So it needs populated dep checkouts and a warm cargo registry. It fails
 loudly rather than silently omitting a component: an unmapped Maven
