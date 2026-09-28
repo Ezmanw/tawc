@@ -278,6 +278,13 @@
         <item quantity="one">%1$d background process</item>
         <item quantity="other">%1$d background processes</item>
     </plurals>
+    <string name="session_awake">awake</string>
+    <string name="session_notification_keep_awake">Keep awake</string>
+    <string name="session_notification_release_wake">Release wakelock</string>
+    <string name="action_keep_awake">Keep awake</string>
+    <string name="battery_prompt_title">Battery optimization</string>
+    <string name="battery_prompt_message">Keep awake stops the phone sleeping. Some devices still stop background apps unless TAWC is set to \"Not optimized\" (or \"Unrestricted\") in battery settings.</string>
+    <string name="battery_prompt_open">Open settings</string>
     <string name="title_remote_access">Remote access</string>
     <string name="action_remote_access">Remote access</string>
     <string name="remote_intro">SSH into this device&#8230;</string>

@@ -33,6 +33,7 @@ object Settings {
     private const val KEY_REMOTE_LOGIN = "remote_login"
     private const val KEY_REMOTE_KEY_USER = "remote_key_user"
     private const val KEY_REMOTE_PASTED_KEY = "remote_pasted_key"
+    private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
@@ -60,6 +61,7 @@ object Settings {
         var remoteLogin: String
         var remoteKeyUser: String
         var remotePastedKey: String
+        var batteryPromptShown: Boolean
     }
 
     private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
@@ -143,6 +145,12 @@ object Settings {
             set(value) {
                 prefs.edit { putString(KEY_REMOTE_PASTED_KEY, value) }
             }
+
+        override var batteryPromptShown: Boolean
+            get() = prefs.getBoolean(KEY_BATTERY_PROMPT_SHOWN, false)
+            set(value) {
+                prefs.edit { putBoolean(KEY_BATTERY_PROMPT_SHOWN, value) }
+            }
     }
 
     private class TestStore : Store {
@@ -160,6 +168,7 @@ object Settings {
         @Volatile override var remoteLogin: String = REMOTE_LOGIN_SECRET
         @Volatile override var remoteKeyUser: String = ""
         @Volatile override var remotePastedKey: String = ""
+        @Volatile override var batteryPromptShown: Boolean = false
     }
 
     @Volatile private var store: Store? = null
@@ -274,6 +283,11 @@ object Settings {
     var remotePastedKey: String
         get() = requireStore().remotePastedKey
         set(value) { requireStore().remotePastedKey = value }
+
+    /** "Keep awake": the battery-optimization prompt was offered once. */
+    var batteryPromptShown: Boolean
+        get() = requireStore().batteryPromptShown
+        set(value) { requireStore().batteryPromptShown = value }
 
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE

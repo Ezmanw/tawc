@@ -365,3 +365,53 @@ fn test_swipe_hangs_up_terminals() {
     adb::shell("am start -n me.phie.tawc/.MainActivity").expect("start MainActivity");
     adb::home_pane("apps").expect("home-pane apps");
 }
+
+/// "Keep awake" holds `tawc:session` only while on; off, Exit and the
+/// service stopping all drop it, and a new service starts released.
+#[test]
+fn test_session_wake_follows_toggle_and_exit() {
+    let _unpinned = Unpinned::new();
+    let wake_lock_held = || {
+        let out = adb::shell("dumpsys power").expect("dumpsys power");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.contains("PARTIAL_WAKE_LOCK") && l.contains("'tawc:session'"))
+    };
+    let wait_lock = |want: bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while wake_lock_held() != want {
+            assert!(Instant::now() < deadline, "tawc:session held != {want}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+
+    let mut cmd = RootfsProcess::spawn_with(BACKEND, "exec sleep 3919").expect("spawn sleeper");
+    let deadline = Instant::now() + TIMEOUT;
+    while adb::session_wake(None).expect("session-wake") != "released" {
+        assert!(Instant::now() < deadline, "session service never came up released");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!wake_lock_held(), "lock held before the toggle");
+
+    assert_eq!(adb::session_wake(Some(true)).expect("wake on"), "held");
+    wait_lock(true);
+    assert_eq!(adb::session_wake(Some(false)).expect("wake off"), "released");
+    wait_lock(false);
+
+    assert_eq!(adb::session_wake(Some(true)).expect("wake on"), "held");
+    wait_lock(true);
+    adb::session_exit().expect("session-exit");
+    wait_lock(false);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while adb::session_service_running().expect("dumpsys") {
+        assert!(Instant::now() < deadline, "session service stayed up after Exit");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(adb::session_wake(Some(true)).expect("wake on"), "unavailable");
+    let _ = cmd.stop();
+
+    // A new service lifetime starts released.
+    let out = adb::rootfs_run_with(BACKEND, "true").expect("run true");
+    assert!(out.status.success(), "`true` failed");
+    assert!(!wake_lock_held(), "lock carried over into a new service");
+}

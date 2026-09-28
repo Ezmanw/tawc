@@ -758,6 +758,18 @@ pub fn session_state() -> io::Result<Vec<String>> {
         .collect())
 }
 
+/// Set "Keep awake" (`Some`) or just read it: `held`, `released` or
+/// `unavailable` (`session-wake`).
+pub fn session_wake(wake: Option<bool>) -> io::Result<String> {
+    let args: &[(&str, &str)] = match wake {
+        Some(true) => &[("wake", "on")],
+        Some(false) => &[("wake", "off")],
+        None => &[],
+    };
+    let output = broker_action("session-wake", args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// What the notification's Exit does: kill everything in every rootfs.
 pub fn session_exit() -> io::Result<Output> {
     broker_action("session-exit", &[])

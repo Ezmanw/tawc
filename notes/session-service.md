@@ -75,11 +75,45 @@ processes belong to the installer. One notification stands for every
 reason, so a partial exit would leave it up. Holds are not force-released;
 each follows its own process down.
 
+## Keep awake
+
+The FGS keeps the process alive, not the CPU: screen off and unplugged,
+the SoC suspends and every guest stops mid-syscall. Measured on the
+OnePlus 9 (2026-09-28): a 1 s rootfs ticker went to bursts with 3–45 s
+gaps and 79 kernel suspends over ~15 min. With the lock held: 0
+suspends, no tick gap over 2 s, and 122/122 curls over Wi-Fi OK across ~21
+min. USB-attached never suspends (`a600000.ssusb` and the charger hold
+kernel wakeup sources), so measure unplugged: leave a ticker writing to a
+file in the rootfs and read it back after replugging. Compare
+`/sys/power/suspend_stats/success` (root) before and after.
+
+Manual, off by default, Termux-style. Holding the CPU for an idle shell
+costs battery, and only the user knows whether the job matters.
+`SessionWake` holds the state (main thread only). While on,
+`SessionService` holds a non-reference-counted `PARTIAL_WAKE_LOCK`
+`tawc:session` and a `WIFI_MODE_FULL_LOW_LATENCY` Wi-Fi lock. Android
+applies low-latency mode only in the foreground with the screen on, and
+`FULL_HIGH_PERF` is a no-op from API 34, so the Wi-Fi lock does little.
+The CPU lock is what keeps the network up. The lock never outlives the
+service. It is dropped on toggle-off, on Exit, and when the service stops,
+and each new service lifetime starts released. Nothing is persisted.
+
+Toggles: a second notification action ("Keep awake" / "Release
+wakelock"; the text gains "· awake") and a checkable "Keep awake" in the
+in-use terminal's ⋮ menu (shown only while the service is up). The first
+enable while TAWC is battery-optimized offers, once
+(`Settings.batteryPromptShown`), the system's battery-optimization list
+(`ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`). The direct
+`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` dialog would need a
+Play-restricted permission.
+
 ## Debug surfaces
 
-Broker actions `session-state` (one line per held reason) and
-`session-exit` (what the Exit button does). Covered by
-`lazy_compositor::test_session_holds_*`.
+Broker actions `session-state` (one line per held reason),
+`session-exit` (what the Exit button does) and `session-wake [--arg
+wake=on|off]` (prints `held`, `released` or `unavailable`). Covered by
+`lazy_compositor::test_session_holds_*` and
+`test_session_wake_follows_toggle_and_exit`.
 
 ## Start/stop must share the main thread
 
@@ -126,5 +160,5 @@ bucket, user "restrict battery usage", or an aggressive OEM ROM can still
 cut the uid, and the app is not on the device-idle allowlist
 (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` is the lever). It does nothing
 for the phantom-process killer or CPU sleep — see
-`issues/phantom-process-killer-kills-rootfs-processes.md` and
-`plans/wakelock.md`.
+`issues/phantom-process-killer-kills-rootfs-processes.md` and "Keep
+awake" below.

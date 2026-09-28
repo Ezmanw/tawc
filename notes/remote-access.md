@@ -243,8 +243,8 @@ keys from …" in key mode, host key fingerprint (own monospace line, scrolls ra
 <other distro>" with Stop. State lives
 in `RemoteSession`, so rotation and leaving the screen change nothing.
 
-Screen off with the SoC suspended still stalls the tunnel: see
-[../plans/wakelock.md](../plans/wakelock.md). Wake on connect (push via
+Screen off with the SoC suspended still stalls the tunnel unless "Keep
+awake" is on ([session-service.md](session-service.md)). Wake on connect (push via
 UnifiedPush/ntfy): [../plans/remote-wake.md](../plans/remote-wake.md).
 
 ## Testing

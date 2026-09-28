@@ -13,6 +13,7 @@ import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -42,6 +43,8 @@ import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.install.showRunCommandDialog
 import me.phie.tawc.launcher.AppsPane
 import me.phie.tawc.remote.RemoteAccessActivity
+import me.phie.tawc.session.SessionWake
+import me.phie.tawc.session.toggleKeepAwake
 import me.phie.tawc.tasks.TaskManagerActivity
 import me.phie.tawc.terminal.TerminalPane
 import me.phie.tawc.terminal.TerminalSessions
@@ -416,6 +419,10 @@ class MainActivity : AppCompatActivity() {
             is Pane.Terminal -> if (!p.terminal.isPending) {
                 menu.item(ORDER_PANE, R.string.action_close_all_terminals) { p.terminal.closeAll() }
                 menu.item(ORDER_PANE, R.string.action_apps) { choosePane(HomePane.APPS) }
+                if (SessionWake.available.value) {
+                    menu.item(ORDER_PANE, R.string.action_keep_awake) { toggleKeepAwake() }
+                        .setCheckable(true).isChecked = SessionWake.held.value
+                }
             }
             else -> Unit
         }
@@ -457,9 +464,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun Menu.item(order: Int, title: Int, onClick: () -> Unit) {
+    private fun Menu.item(order: Int, title: Int, onClick: () -> Unit): MenuItem =
         add(Menu.NONE, Menu.NONE, order, title).setOnMenuItemClickListener { onClick(); true }
-    }
 
     // ---- intro / info panes ------------------------------------------------
 

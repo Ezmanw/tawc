@@ -64,8 +64,10 @@ and relay id are saved per device. Pushed payloads never carry secrets.
 - **Starting an FGS from the background.** Android 12+ blocks
   foreground-service starts from background broadcasts unless the app is
   exempt. The UnifiedPush receiver probably needs the battery-optimization
-  exemption (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, shared with
-  [wakelock.md](wakelock.md); check [play-store.md](play-store.md)).
+  exemption (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`; Keep awake
+  avoided it as Play-restricted, see
+  [notes/session-service.md](../notes/session-service.md); check
+  [play-store.md](play-store.md)).
   Measure on the physical target with the app swiped away, screen off,
   and unplugged (wireless adb).
 - **The process may be dead.** The broadcast cold-starts it. The receiver
@@ -73,9 +75,8 @@ and relay id are saved per device. Pushed payloads never carry secrets.
   `ready`. It also must not touch UI, and the tawcroot envelope has to be
   buildable without an activity.
 - **After the wake.** The tunnel still needs the CPU awake while someone
-  is logged in, which is wakelock.md's problem. A woken session should
-  probably hold the wakelock automatically for as long as it has
-  clients.
+  is logged in. A woken session should probably turn on Keep awake
+  (`SessionWake`) automatically for as long as it has clients.
 - **Distributor missing.** If no distributor is installed, the checkbox
   explains that and links to ntfy on F-Droid.
 
