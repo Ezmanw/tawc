@@ -197,7 +197,7 @@ internal class TerminalPane(
     }
 
     fun onResume() {
-        terminalView.onScreenUpdated()
+        screenUpdated()
     }
 
     fun showSoftKeyboard() {
@@ -457,6 +457,7 @@ internal class TerminalPane(
             return true
         }
         if (!e.isSystem && !KeyEvent.isModifierKey(keyCode)) {
+            snapToBottom()
             promotePending()
             if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) promotedAt = null
         }
@@ -481,6 +482,7 @@ internal class TerminalPane(
     override fun readFnKey(): Boolean = readSpecialButton(SpecialButton.FN)
 
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        snapToBottom()
         promotePending()
         if (codePoint == '\r'.code || codePoint == '\n'.code) promotedAt = null
         return false
@@ -496,8 +498,34 @@ internal class TerminalPane(
 
     override fun onTextChanged(changedSession: TerminalSession) {
         if (changedSession !== activeSession) return
-        terminalView.onScreenUpdated()
+        screenUpdated()
         maybeDemote(changedSession)
+    }
+
+    /**
+     * onScreenUpdated() that holds the viewport on the same lines when
+     * scrolled back, instead of termux's unconditional snap to bottom.
+     */
+    private fun screenUpdated() {
+        val emulator = terminalView.mEmulator
+        val topRow = terminalView.topRow
+        // Pinned to the bottom, or upstream already shifts (selection).
+        if (emulator == null || topRow == 0 || terminalView.isSelectingText) {
+            terminalView.onScreenUpdated()
+            return
+        }
+        val shift = emulator.scrollCounter // cleared by onScreenUpdated
+        terminalView.onScreenUpdated(true)
+        // Once the transcript ring drops the held lines, sit at the oldest.
+        terminalView.topRow = maxOf(-emulator.screen.activeTranscriptRows, topRow - shift)
+        terminalView.invalidate()
+    }
+
+    /** Input while scrolled back jumps to the live screen, like xterm. */
+    private fun snapToBottom() {
+        if (terminalView.topRow == 0) return
+        terminalView.topRow = 0
+        terminalView.invalidate()
     }
 
     // A prompt can set the title twice in a row (a distro
@@ -516,7 +544,7 @@ internal class TerminalPane(
             // Died before anyone typed (e.g. a broken login shell):
             // closing the app here would make it unopenable. Keep the
             // transcript with termux's exit line; tap/Enter respawns.
-            if (finishedSession === activeSession) terminalView.onScreenUpdated()
+            if (finishedSession === activeSession) screenUpdated()
             return
         }
         removeFinishedSession(finishedSession)
@@ -533,6 +561,7 @@ internal class TerminalPane(
         val item = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return
         val text = item.coerceToText(activity).toString()
         if (text.isEmpty()) return
+        snapToBottom()
         promotePending()
         // A pasted newline runs something: no longer the untouched screen.
         promotedAt = null

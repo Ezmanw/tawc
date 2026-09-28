@@ -21,6 +21,12 @@ configuration):
 - `terminal-view` — `TerminalView`, a plain `android.view.View` with
   IME/scroll/selection/mouse-reporting handling.
 
+Scrollback: upstream `onScreenUpdated()` snaps to the bottom on every
+output chunk. `TerminalPane.screenUpdated()` wraps it through public
+API to hold the viewport when scrolled back (`topRow -= scrollCounter`,
+clamped to the transcript); input/paste snaps back to the bottom.
+Rotation, font size and tab switches still reset to the bottom.
+
 Both modules are **Apache-2.0** (the explicit exception in termux-app's
 `LICENSE.md`; they descend from jackpal's Android-Terminal-Emulator).
 Termux packages/bootstrap are not involved at all; the shell is one
