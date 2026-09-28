@@ -240,10 +240,8 @@ class RemoteAccessActivity : AppCompatActivity() {
             if (s.keySource.isNotEmpty()) {
                 body.addView(secondary(getString(R.string.remote_keys_from, s.keySource)), verticalLp(MATCH_PARENT, WRAP_CONTENT, dp(4)))
             }
-            body.addView(
-                secondary(getString(R.string.remote_fingerprint, s.fingerprint)).apply { setTextIsSelectable(true) },
-                verticalLp(MATCH_PARENT, WRAP_CONTENT, dp(8)),
-            )
+            body.addView(secondary(getString(R.string.remote_fingerprint)), verticalLp(MATCH_PARENT, WRAP_CONTENT, dp(8)))
+            body.addView(fingerprintLine(s.fingerprint), verticalLp(MATCH_PARENT, WRAP_CONTENT))
         }
         if (s.secretDisabled) {
             body.addView(
@@ -306,25 +304,46 @@ class RemoteAccessActivity : AppCompatActivity() {
         }
     }
 
-    /** Monospace command on one line, scrolled sideways if it doesn't
-     *  fit; tap to copy (the clip is marked sensitive: it holds the
-     *  secret). */
+    /** Monospace command; if one line doesn't fit, the destination moves
+     *  to a `\\`-continued second line, which still scrolls sideways
+     *  rather than wrapping. Tap to copy the one-line form (the clip is
+     *  marked sensitive: it holds the secret). */
     private fun commandCard(command: String): View {
         val card = tawcCard()
+        val split = command.lastIndexOf(' ')
+        val wrapped = if (split > 0) "${command.substring(0, split)} \\\n  ${command.substring(split + 1)}" else command
         val tv = TextView(this).apply {
             text = command
             typeface = Typeface.MONOSPACE
             textSize = COMMAND_SP
-            maxLines = 1
             setHorizontallyScrolling(true)
             setPadding(dp(14), dp(14), dp(14), dp(14))
             setOnClickListener { copy(command) }
         }
-        card.addView(HorizontalScrollView(this).apply {
+        val scroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             addView(tv)
-        })
+        }
+        scroll.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            val fits = tv.paint.measureText(command) <= v.width - tv.totalPaddingLeft - tv.totalPaddingRight
+            val want = if (fits) command else wrapped
+            if (tv.text.toString() != want) v.post { tv.text = want }
+        }
+        card.addView(scroll)
         return card
+    }
+
+    /** The fingerprint on its own monospace line: base64's `/` and `+`
+     *  are break points, so wrapping would split it at random. Scrolls
+     *  sideways if it doesn't fit. */
+    private fun fingerprintLine(fingerprint: String): View = HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        addView(secondary(fingerprint).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 12f
+            setHorizontallyScrolling(true)
+            setTextIsSelectable(true)
+        })
     }
 
     private fun copy(command: String) {
@@ -355,6 +374,6 @@ class RemoteAccessActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_ID = "id"
         private const val MAX_WIDTH_DP = 600
-        private const val COMMAND_SP = 14f
+        private const val COMMAND_SP = 16f
     }
 }

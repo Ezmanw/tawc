@@ -52,7 +52,8 @@ default), the notification's Exit, or the distro's uninstall.
   its own key), the jump host must match upstream's shell-inert grammar,
   free text is stripped of control characters and truncated. The
   browser-terminal link (`web`) and `latest` are ignored; the hello has no
-  `comment`.
+  `comment`. The web terminal stays unused on purpose: it means trusting
+  the website with the secret, which plain ssh doesn't.
 - Anyone with the secret gets a root shell in the distro (app uid
   outside), like the in-app terminal. The idle screen says so.
 - Secret: three words from the RFC 1751 dictionary (the relay ids'
@@ -152,6 +153,9 @@ KB per ABI.
 
 ### Tunnel protocol (relay v1)
 
+The relay-side spec (enough to write a replacement relay) is
+[remote/README.md](../remote/README.md); this is the agent's view.
+
 `GET wss://<relay>/v1/tunnel`, `User-Agent: tawc/<versionName>
 android/<arch>`, `fly-force-instance-id: <node>` on reconnect to land on
 the same relay machine. Every binary message is a chunk of one byte
@@ -231,14 +235,17 @@ latter —, "Public key from" radio — generated passphrase / GitHub / GitLab /
 Codeberg (username field) / paste a public key (text box) —, idle-close
 checkbox, the error if the last run failed, Start). Choices and drafts
 persist in `Settings` as they change. Running: green "Ready" and the
-connection count (or connecting/reconnecting), the command on one line,
-horizontally scrollable, tap to copy as a sensitive clip, "Logs in with
-keys from …" in key mode, host key fingerprint, Stop. Or "running for
+connection count (or connecting/reconnecting), the command (monospace;
+if one line doesn't fit, the destination goes on a `\`-continued second
+line, and a still-too-long line scrolls sideways rather than wrapping),
+tap to copy the one-line form as a sensitive clip, "Logs in with
+keys from …" in key mode, host key fingerprint (own monospace line, scrolls rather than wraps), Stop. Or "running for
 <other distro>" with Stop. State lives
 in `RemoteSession`, so rotation and leaving the screen change nothing.
 
 Screen off with the SoC suspended still stalls the tunnel: see
-[../plans/wakelock.md](../plans/wakelock.md).
+[../plans/wakelock.md](../plans/wakelock.md). Wake on connect (push via
+UnifiedPush/ntfy): [../plans/remote-wake.md](../plans/remote-wake.md).
 
 ## Testing
 

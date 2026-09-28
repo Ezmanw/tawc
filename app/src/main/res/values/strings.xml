@@ -305,7 +305,7 @@
         <item quantity="one">%1$d connection</item>
         <item quantity="other">%1$d connections</item>
     </plurals>
-    <string name="remote_fingerprint">Host key %1$s</string>
+    <string name="remote_fingerprint">Host key</string>
     <string name="remote_secret_disabled">Too many wrong secrets. Stop and start again for a new one.</string>
     <string name="remote_copied">Copied</string>
 </resources>
