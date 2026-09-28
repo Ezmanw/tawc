@@ -143,31 +143,25 @@ every `TerminalView` write path except autofill; the extra keys route
 through them) or a paste. Output alone (bashrc, the prompt) doesn't
 count. `+` and command tabs are in use from birth.
 
-**Back to pending.** The only tab (not a command tab) is demoted
-(`TerminalSessions.demote`, hold released) as soon as it is an untouched
-prompt again and nothing else runs in its session — checked on each
-output chunk and bell (`ShellIdle`, unit-tested against a real
-emulator):
+**Back to pending.** The promoted shell is demoted
+(`TerminalSessions.demote`, hold released) when its first input is
+erased with nothing entered and nothing else runs in its session —
+checked on each output chunk and bell (`ShellIdle`, unit-tested
+against a real emulator):
 
-- *Screen:* not the alternate screen, nothing at or after the cursor,
-  and either the cursor is back where the pending shell got its first
-  input with no Enter since (typed, then erased), or the screen is
-  cleared — no scrollback, only a one-line prompt at the top (`clear`;
-  Ctrl-L keeps scrollback, so it doesn't count). The screen can't tell
-  a prompt from unsent input, so the pane tracks input: after `clear`
-  the line must be untouched since the last Enter, or erased back to
-  where typing started. A tab switch leaves the line state unknown
-  until the next Enter.
+- *Screen:* not the alternate screen, the cursor back where the
+  pending shell got its first input (same size), nothing at or after
+  it. Enter, a paste or a tab switch forfeits it.
 - *Session:* the shell is the only process whose session id is its pid
-  (`/proc/*/stat`). A foreground program (even one that cleared the
-  screen), a background job or a `nohup` child keeps it in use;
-  `setsid`'d processes survive the shell anyway (stray tail).
+  (`/proc/*/stat`), in case a key binding started something.
 
-Demoting drops cwd, env and history if the shell is later killed; a
-cleared screen says the user is done with them. Multi-line prompts,
-resizes and output above the prompt just keep it in use.
+Once anything was entered the tab stays in use until it closes.
+⋮ **Close all** (above Apps, in-use only) hangs up every tab
+(`TerminalSessions.hangUp`, as the swipe below) and leaves one fresh
+pending shell; closing the last tab by `exit`/× closes the app
+instead.
 `home_terminal::test_terminal_returns_to_pending_when_idle` drives the
-real shell through each case.
+real shell.
 
 | | Pending | In use |
 |---|---|---|
@@ -176,13 +170,31 @@ real shell through each case.
 | FAB | Apps | none (⋮ → Apps) |
 | `keepScreenOn` | off | on |
 | Pane / distro switch | killed | keep running, pane detaches |
-| `MainActivity.onDestroy` | killed (recreation reattaches) | untouched; notification Exit kills |
+| `MainActivity.onDestroy` | killed (recreation reattaches) | untouched |
+| Recents swipe of the home task | killed | SIGHUP (below) |
+| Notification Exit | killed | killed |
 | Uninstall started | killed (`InstallationService.startUninstall`) | swept by the uninstall |
-| Only tab idle again (above) | — | back to pending |
+| First input erased (above) | — | back to pending |
 | Shell exits / × on last tab | transcript stays, tap/Enter respawns | tab closes; last one → `finishAndRemoveTask` |
+| ⋮ Close all | — | hung up; one new pending shell |
 
-The recents card no longer kills shells: in-use shells outlive a swipe
-(the notification brings them back). Detached sessions get a
+**Swipe = closing the windows.** Only an explicit recents swipe of the
+home task closes in-use shells, like closing desktop terminal windows:
+`SessionService.onTaskRemoved` (never called for system kills; the
+service is up while any tab is in use) checks the root activity's
+affinity is the default one (not a compositor window) and runs
+`TerminalSessions.hangUpAll`: SIGHUP to each shell (the pid is the
+shell — tawcroot is in-process), which hangs up its jobs as bash/zsh
+do on a pty hangup (this needs tawcroot's top-level SIGHUP reset:
+Android apps inherit it ignored); shells still up after 3 s are killed. `nohup`,
+`disown` and `setsid` children survive and keep the service up as the
+stray tail ([session-service.md](session-service.md)).
+`onTaskRemoved` also fires for the app's own `finishAndRemoveTask`
+(last tab closed), which must not hang up other distros' tabs:
+`TerminalSessions.selfRemoving` marks that one (reset by
+`MainActivity.onCreate` in case the callback never comes). Otherwise
+in-use shells outlive the activity; the notification brings them
+back. Detached sessions get a
 `DetachedTerminalClient`, which drops their registry entry (tab or
 pending slot) if they exit meanwhile. `SessionService`'s stray scan
 skips pending pids ([session-service.md](session-service.md)).

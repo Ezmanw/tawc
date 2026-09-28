@@ -297,3 +297,71 @@ fn test_session_holds_ignore_pending_terminal() {
     adb::home_pane("apps").expect("home-pane apps");
     wait_state("none");
 }
+
+/// `am stack remove` on MainActivity's root task: the recents swipe.
+fn remove_main_task() {
+    let out = adb::shell("am stack list").expect("am stack list");
+    let list = String::from_utf8_lossy(&out.stdout);
+    let mut root = None;
+    let mut found = None;
+    for line in list.lines() {
+        if let Some(rest) = line.trim().strip_prefix("RootTask id=") {
+            root = rest.split_whitespace().next().map(str::to_string);
+        } else if line.contains("me.phie.tawc/me.phie.tawc.MainActivity") {
+            found = root.clone();
+        }
+    }
+    let id = found.expect("MainActivity task");
+    adb::shell(&format!("am stack remove {id}")).expect("am stack remove");
+}
+
+/// Swiping the home screen away hangs up its shells like closing
+/// desktop terminal windows: a plain background job dies, a `nohup`
+/// one survives and keeps the service up as a stray until Exit.
+#[test]
+fn test_swipe_hangs_up_terminals() {
+    let _unpinned = Unpinned::new();
+    adb::shell("am start -n me.phie.tawc/.MainActivity").expect("start MainActivity");
+    adb::home_pane("terminal").expect("home-pane terminal");
+    let wait_until = |what: &str, f: &mut dyn FnMut() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !f() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    let state = || adb::terminal_state().expect("terminal-state");
+    wait_until("pending shell", &mut || state() == "pending");
+    // Let bash print its first prompt before typing.
+    std::thread::sleep(Duration::from_secs(1));
+
+    let sleepers = || {
+        let ps = adb::host_sh("ps -A -o ARGS | grep -E 'sleep 392[12]' | grep -v grep; true").expect("ps");
+        String::from_utf8_lossy(&ps.stdout).trim().to_string()
+    };
+    for line in ["sleep%s3921%s&", "nohup%ssleep%s3922%s>/dev/null%s2>&1%s&"] {
+        adb::shell(&format!("input text '{line}'")).expect("input text");
+        adb::shell("input keyevent 66").expect("enter");
+    }
+    wait_until("both sleepers", &mut || {
+        let s = sleepers();
+        s.contains("sleep 3921") && s.contains("sleep 3922")
+    });
+
+    remove_main_task();
+    wait_until("the shell to close", &mut || state() == "none");
+    wait_until("the plain job to die", &mut || !sleepers().contains("sleep 3921"));
+    assert!(sleepers().contains("sleep 3922"), "nohup child died with the shell");
+    let reasons = adb::session_state().expect("session-state");
+    assert!(reasons.is_empty(), "hung-up shell still holds: {reasons:?}");
+    assert!(adb::session_service_running().expect("service state"), "stray tail should keep the service up");
+
+    adb::session_exit().expect("session-exit");
+    wait_until("the service to stop", &mut || !adb::session_service_running().expect("service state"));
+    assert!(sleepers().is_empty(), "exit left {}", sleepers());
+
+    // Later tests expect a TAWC activity in front: compositor windows
+    // can't launch from the background.
+    adb::shell("am start -n me.phie.tawc/.MainActivity").expect("start MainActivity");
+    adb::home_pane("apps").expect("home-pane apps");
+}

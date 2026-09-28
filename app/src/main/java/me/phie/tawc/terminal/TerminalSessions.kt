@@ -1,5 +1,10 @@
 package me.phie.tawc.terminal
 
+import android.os.Handler
+import android.os.Looper
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
@@ -137,6 +142,30 @@ internal object TerminalSessions {
         return sessions
     }
 
+    /**
+     * Close every terminal window (the home task was swiped away):
+     * SIGHUP each shell, as a desktop terminal closing its pty does. The
+     * shell passes the hangup on to its jobs, so only `nohup`/`disown`/
+     * `setsid` children survive. Shells still up after [HANGUP_GRACE_MS]
+     * (trapped HUP) are killed. Tabs close through the normal exit path.
+     */
+    fun hangUpAll() = hangUp(all())
+
+    /** [hangUpAll] for just [sessions]. */
+    fun hangUp(sessions: List<TerminalSession>) {
+        for (s in sessions) s.hangUp()
+        Handler(Looper.getMainLooper()).postDelayed({ for (s in sessions) s.kill() }, HANGUP_GRACE_MS)
+    }
+
+    /**
+     * Set just before the app removes its own home task (last shell
+     * exited), so [SessionService.onTaskRemoved] doesn't take that for a
+     * swipe and hang up other distros' shells. Main thread only.
+     */
+    var selfRemoving = false
+
+    private const val HANGUP_GRACE_MS = 3000L
+
     @Synchronized
     fun selected(id: String): Int = entries[id]?.selected ?: 0
 
@@ -155,6 +184,15 @@ internal object TerminalSessions {
  */
 internal fun TerminalSession.kill() {
     if (pid > 0) finishIfRunning()
+}
+
+private fun TerminalSession.hangUp() {
+    if (pid <= 0 || !isRunning) return
+    try {
+        Os.kill(pid, OsConstants.SIGHUP)
+    } catch (_: ErrnoException) {
+        // Already gone.
+    }
 }
 
 /**

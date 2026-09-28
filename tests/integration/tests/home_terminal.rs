@@ -1,7 +1,8 @@
-//! The home screen's terminal: a pending shell goes in use on input and
-//! back to pending once it's an untouched prompt again with nothing else
-//! in its session (notes/terminal.md "Pending vs in use"). Typed into
-//! through the real IME path (`input`), so MainActivity must be visible.
+//! The home screen's terminal (notes/terminal.md "Pending vs in use"): a
+//! pending shell goes in use on input, back to pending if that input is
+//! erased, and the last shell exiting closes the app (the recents swipe
+//! is in lazy_compositor.rs). Typed into through the real IME path
+//! (`input`), so MainActivity must be visible.
 
 use std::time::{Duration, Instant};
 
@@ -67,31 +68,19 @@ fn test_terminal_returns_to_pending_when_idle() {
     let reasons = adb::session_state().expect("session-state");
     assert!(!reasons.iter().any(|r| r.starts_with("terminal ")), "demoted shell still holds: {reasons:?}");
 
-    // A command ran: erasing a later line doesn't count, `clear` does.
+    // Once something ran, erasing or `clear` keeps it in use.
     run("true");
     type_text("x");
     key(DEL);
     hold_state("inUse:1", Duration::from_secs(2));
     run("clear");
-    wait_state("pending");
-
-    // A background job keeps it in use through `clear`.
-    run("sleep%s300%s&");
-    run("clear");
     hold_state("inUse:1", Duration::from_secs(2));
-    // Separate lines: bash prints the job's "Terminated" before the
-    // next prompt.
-    run("kill%s%1");
-    run("clear");
-    wait_state("pending");
 
-    // So does a foreground program that clears the screen.
-    run("clear;cat");
-    hold_state("inUse:1", Duration::from_secs(2));
-    adb::shell("input keycombination 113 31").expect("ctrl-c");
-    run("clear");
-    wait_state("pending");
-
-    adb::home_pane("apps").expect("home-pane apps");
+    // The last shell exiting closes the app, pending shell included.
+    run("exit");
     wait_state("none");
+
+    // Later tests expect a TAWC activity in front.
+    adb::shell("am start -n me.phie.tawc/.MainActivity").expect("start MainActivity");
+    adb::home_pane("apps").expect("home-pane apps");
 }

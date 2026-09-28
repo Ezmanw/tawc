@@ -61,7 +61,9 @@ pending shell has no children, so its pid is enough
 channel is deleted), low importance, ongoing. Title "TAWC running", text
 e.g. "2 terminals · 3 windows", "Running: htop", "3 background
 processes". Tap opens `MainActivity` on its last pane. Swiping the
-recents card leaves in-use shells running; the tap brings them back.
+home screen's recents card hangs up its shells (`onTaskRemoved`,
+[terminal.md](terminal.md) "Swipe = closing the windows"); what they
+leave behind shows as background processes.
 
 **Exit** (`SessionExit.killEverything`) kills everything: finishes every
 terminal session, pending ones included (tabs close through the normal

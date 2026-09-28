@@ -6,8 +6,8 @@ import java.io.IOException
 
 /**
  * When an in-use shell may go back to pending (notes/terminal.md
- * "Pending vs in use"): its screen shows nothing but a prompt with an
- * empty input line, and nothing else runs in its session.
+ * "Pending vs in use"): the input that promoted it was erased, and
+ * nothing else runs in its session.
  */
 internal object ShellIdle {
 
@@ -19,41 +19,20 @@ internal object ShellIdle {
         Anchor(emulator.cursorRow, emulator.cursorCol, emulator.mRows, emulator.mColumns)
 
     /**
-     * The screen reads as an untouched prompt: nothing at or after the
-     * cursor, and either
-     *
-     * - the cursor is back at [promoted] — where it was when the pending
-     *   shell got its first input, with no Enter since (typed, erased), or
-     * - the screen was cleared (`clear`: no scrollback, a one-line prompt
-     *   at the top) and the input line is empty: nothing typed since the
-     *   last Enter ([lineDirty] false), or erased back to [lineStart].
-     *
-     * The screen alone can't tell a prompt from unsent input, hence the
-     * caller's input tracking. Anything else — a resize, output above, a
-     * multi-line prompt — doesn't count.
+     * The screen is back to the pending shell's prompt: the cursor at
+     * [promoted] (where it got its first input) with nothing at or after
+     * it — input typed, then erased. A resize, output above or the
+     * alternate screen doesn't count.
      */
-    fun screenIsFresh(
-        emulator: TerminalEmulator,
-        promoted: Anchor?,
-        lineDirty: Boolean,
-        lineStart: Anchor?,
-    ): Boolean {
-        if (emulator.isAlternateBufferActive) return false
-        val screen = emulator.screen
+    fun screenIsFresh(emulator: TerminalEmulator, promoted: Anchor): Boolean {
+        if (emulator.isAlternateBufferActive || !promoted.isAt(emulator)) return false
         val row = emulator.cursorRow
         val col = emulator.cursorCol
-        val lastRow = emulator.mRows - 1
-        val lastCol = emulator.mColumns - 1
-        if (screen.getSelectedText(col, row, lastCol, lastRow).isNotBlank()) return false
-        if (promoted.isAt(emulator)) return true
-        if (lineDirty && !lineStart.isAt(emulator)) return false
-        if (screen.activeTranscriptRows != 0 || col == 0) return false
-        if (row > 0 && screen.getSelectedText(0, 0, lastCol, row - 1).isNotBlank()) return false
-        return screen.getSelectedText(0, row, col - 1, row).isNotBlank()
+        return emulator.screen.getSelectedText(col, row, emulator.mColumns - 1, emulator.mRows - 1).isBlank()
     }
 
-    private fun Anchor?.isAt(e: TerminalEmulator): Boolean =
-        this != null && rows == e.mRows && columns == e.mColumns && row == e.cursorRow && col == e.cursorCol
+    private fun Anchor.isAt(e: TerminalEmulator): Boolean =
+        rows == e.mRows && columns == e.mColumns && row == e.cursorRow && col == e.cursorCol
 
     /**
      * Whether [shellPid] is the only process in its session (the shell

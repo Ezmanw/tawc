@@ -126,6 +126,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         requestNotificationPermissionIfNeeded()
+        // A new home task: any earlier self-removal is over, whether or
+        // not onTaskRemoved saw it.
+        TerminalSessions.selfRemoving = false
 
         // Registered before the drawer's own callback so an open drawer
         // (added later, so consulted first) still closes on Back.
@@ -221,8 +224,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         // Recreation reattaches the pending shell; any other destroy
-        // (finish, recents swipe) kills it. In-use shells always stay —
-        // the notification's Exit is their kill switch.
+        // kills it. In-use shells outlive the activity: only a recents
+        // swipe (SessionService.onTaskRemoved) or the notification's
+        // Exit closes them.
         tearDown(keepPending = isChangingConfigurations)
     }
 
@@ -306,7 +310,9 @@ class MainActivity : AppCompatActivity() {
                         override fun showMenu(anchor: View) = showOverflowMenu(anchor)
                         override fun onTerminalStateChanged() = updateFab()
                         override fun onLastShellExited() {
-                            if (!isFinishing) finishAndRemoveTask()
+                            if (isFinishing) return
+                            TerminalSessions.selfRemoving = true
+                            finishAndRemoveTask()
                         }
                     },
                 )
@@ -407,6 +413,7 @@ class MainActivity : AppCompatActivity() {
             is Pane.Apps -> p.apps.addMenuItems(menu, ORDER_PANE)
             // No FAB on an in-use terminal, so the way back lives here.
             is Pane.Terminal -> if (!p.terminal.isPending) {
+                menu.item(ORDER_PANE, R.string.action_close_all_terminals) { p.terminal.closeAll() }
                 menu.item(ORDER_PANE, R.string.action_apps) { choosePane(HomePane.APPS) }
             }
             else -> Unit

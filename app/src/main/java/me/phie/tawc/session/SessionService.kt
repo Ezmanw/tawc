@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
@@ -76,6 +77,32 @@ class SessionService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * Only an explicit removal (recents swipe) lands here, never a
+     * system kill. Swiping the home screen closes its terminals like
+     * closing desktop terminal windows; compositor window tasks don't.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (!isHomeTask(rootIntent)) return
+        if (TerminalSessions.selfRemoving) {
+            TerminalSessions.selfRemoving = false
+        } else {
+            TerminalSessions.hangUpAll()
+        }
+    }
+
+    /** The default-affinity task, where MainActivity lives (compositor
+     *  and launch trampolines use `taskAffinity=""`). */
+    private fun isHomeTask(rootIntent: Intent?): Boolean {
+        val component = rootIntent?.component ?: return false
+        return try {
+            packageManager.getActivityInfo(component, 0).taskAffinity == packageName
+        } catch (_: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
 
     override fun onDestroy() {
         SessionHolds.serviceStopped(this)

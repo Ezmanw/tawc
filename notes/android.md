@@ -152,7 +152,7 @@ view controllers, no Fragments; each supplies its own top row (48dp
   apps (`ic_apps`, lifted above the extra keys); in-use terminal → none
   (⋮ → Apps).
 - **⋮:** one `PopupMenu` per screen, top to bottom: pane items (apps:
-  Show hidden (N) when N > 0, Add entry…; in-use terminal: Apps — the
+  Show hidden (N) when N > 0, Add entry…; in-use terminal: Close all, Apps — the
   one pane toggle, since no FAB shows there), Settings (opened on that
   distro's card, `SettingsActivity.EXTRA_ID`), Run… (READY), Task
   manager, Distro info.

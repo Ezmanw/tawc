@@ -55,10 +55,11 @@ import java.io.IOException
  * pane spawns a *pending* shell — no session hold, no notification, no
  * tab strip (the distro label sits there), screen may sleep. The first
  * input that reaches it ([onKeyDown] / [onCodePoint] / a paste)
- * promotes it to an ordinary tab. The only tab goes back to pending
- * when it's idle again ([maybeDemote]). A pending shell that dies (e.g. a
- * broken `chsh`) stays on screen; a tap or Enter respawns. The tab
- * bar has no `+` while pending.
+ * promotes it to an ordinary tab. It goes back to pending if that input
+ * is erased again ([maybeDemote]); the last tab closing closes the app,
+ * while [closeAll] leaves a fresh pending shell. A pending shell that dies (e.g. a broken `chsh`)
+ * stays on screen; a tap or Enter respawns. The tab bar has no `+`
+ * while pending.
  *
  * tawcroot-only: chroot spawns via su and proot is dev-only.
  */
@@ -88,12 +89,9 @@ internal class TerminalPane(
     private var fontSizePx = (DEFAULT_FONT_SIZE_DP * density).toInt()
     private var detached = false
 
-    // Input tracking for [maybeDemote] (see ShellIdle.screenIsFresh):
-    // where the pending shell got its first input (until Enter), and
-    // whether / where the current input line has been typed into.
+    // For [maybeDemote]: where the pending shell got its first input;
+    // cleared by Enter, a paste or a tab switch.
     private var promotedAt: ShellIdle.Anchor? = null
-    private var lineDirty = false
-    private var lineStart: ShellIdle.Anchor? = null
 
     /** Black column: tab bar, terminal, extra keys. */
     val view: LinearLayout
@@ -204,6 +202,18 @@ internal class TerminalPane(
         terminalView.post { imm.showSoftInput(terminalView, 0) }
     }
 
+    /** Hang up every tab and show a fresh pending shell. */
+    fun closeAll() {
+        val sessions = TerminalSessions.removeAll(distroId)
+        if (sessions.isEmpty()) return
+        // Dropped from the registry first, so their exits find no tab.
+        for (i in sessions.indices.reversed()) tabBar.removeTab(i)
+        TerminalSessions.hangUp(sessions)
+        promotedAt = null
+        showPending(spawnPending())
+        host.onTerminalStateChanged()
+    }
+
     /** A `Terminal=true` entry: [exec] in a new in-use tab. */
     fun openCommandTab(command: CommandTab) {
         TerminalSessions.killPending(distroId)
@@ -246,42 +256,21 @@ internal class TerminalPane(
     }
 
     /**
-     * Back to pending when the only tab (not a command tab) shows just
-     * an untouched prompt — input typed then erased, or `clear` — and
-     * nothing else runs in its session: no foreground program, no
-     * background job. Killing it on a pane switch then loses only cwd,
-     * env and history, which a cleared screen says the user is done with.
+     * Back to pending when the promoted shell's input was erased with
+     * nothing entered: the screen is the prompt it had when pending, and
+     * nothing else runs in its session.
      */
     private fun maybeDemote(session: TerminalSession) {
-        if (detached || session !== activeSession || session.mSessionName != null || !session.isRunning) return
-        val tabs = TerminalSessions.list(distroId)
-        if (tabs.size != 1 || tabs[0] !== session) return
+        val promoted = promotedAt ?: return
+        if (detached || session !== activeSession || !session.isRunning) return
         val emulator = session.emulator ?: return
-        if (!ShellIdle.screenIsFresh(emulator, promotedAt, lineDirty, lineStart)) return
+        if (!ShellIdle.screenIsFresh(emulator, promoted)) return
         if (!ShellIdle.aloneInSession(session.pid)) return
         if (!TerminalSessions.demote(distroId, session)) return
-        resetInputTracking(dirty = false)
+        promotedAt = null
         tabBar.removeTab(0)
         showPending(session)
         host.onTerminalStateChanged()
-    }
-
-    /** Call before input reaches the active session. */
-    private fun noteInput(enter: Boolean) {
-        if (enter) {
-            resetInputTracking(dirty = false)
-        } else if (!lineDirty) {
-            lineDirty = true
-            lineStart = activeSession?.emulator?.let { ShellIdle.anchorOf(it) }
-        }
-    }
-
-    /** [dirty]: the line's state is unknown (e.g. another tab), so only
-     *  an Enter makes it count as empty again. */
-    private fun resetInputTracking(dirty: Boolean) {
-        promotedAt = null
-        lineDirty = dirty
-        lineStart = null
     }
 
     /** Dead or failed pending shell: replace it with a fresh one. */
@@ -351,7 +340,7 @@ internal class TerminalPane(
     /** Attach the session at [index] (registry order == bar order). */
     private fun selectTab(index: Int) {
         val session = TerminalSessions.list(distroId).getOrNull(index) ?: return
-        if (session !== activeSession) resetInputTracking(dirty = true)
+        if (session !== activeSession) promotedAt = null
         TerminalSessions.setSelected(distroId, index)
         activeSession = session
         tabBar.setSelected(index)
@@ -464,7 +453,7 @@ internal class TerminalPane(
         }
         if (!e.isSystem && !KeyEvent.isModifierKey(keyCode)) {
             promotePending()
-            noteInput(enter = keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)
+            if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) promotedAt = null
         }
         return false
     }
@@ -488,7 +477,7 @@ internal class TerminalPane(
 
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
         promotePending()
-        noteInput(enter = codePoint == '\r'.code || codePoint == '\n'.code)
+        if (codePoint == '\r'.code || codePoint == '\n'.code) promotedAt = null
         return false
     }
 
@@ -542,7 +531,6 @@ internal class TerminalPane(
         promotePending()
         // A pasted newline runs something: no longer the untouched screen.
         promotedAt = null
-        noteInput(enter = false)
         terminalView.currentSession?.emulator?.paste(text)
     }
 
