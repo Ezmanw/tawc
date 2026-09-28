@@ -20,11 +20,11 @@ import me.phie.tawc.R
 
 /**
  * Top row of the home screen's [TerminalPane]:
- * `[≡][ tabs… + ……… ][⋮]`. The strip scrolls horizontally, with `+`
- * right after the last tab; `≡` and `⋮` are pinned outside it, always
- * visible. Each tab is an ellipsized label plus a small `×` close
+ * `[≡][ tabs… ][+] …… [⋮]`. The tab strip scrolls horizontally; `+`
+ * sits outside it, right after the last tab, and stays in place once
+ * the tabs overflow. `≡` and `⋮` are pinned at the edges. Each tab is an ellipsized label plus a small `×` close
  * button. While the pane's shell is pending ([setPendingLabel]) the
- * strip (and so `+`) is replaced by the distro label.
+ * strip and `+` are replaced by the distro label.
  *
  * Imperative custom view, no XML layout (app style). Indices map 1:1
  * to `TerminalSessions.list(distroId)` — the bar never reorders; the
@@ -45,6 +45,7 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
     var onMenuClicked: (View) -> Unit = {}
 
     private val scroller: HorizontalScrollView
+    private val tabsRow: LinearLayout
     private val strip: LinearLayout
     private val pendingLabel: TextView
     private val newTab: View
@@ -64,7 +65,22 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
             isHorizontalScrollBarEnabled = false
             addView(strip, LayoutParams(WRAP_CONTENT, MATCH_PARENT))
         }
-        addView(scroller, LayoutParams(0, MATCH_PARENT, 1f))
+        newTab = barButton(R.drawable.ic_add, R.string.terminal_new_tab) { onNewTabClicked() }
+        tabsRow = object : LinearLayout(context) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                // Measure contents as wrap-content so `+` hugs the tabs; the
+                // weighted scroller gives back any overflow. Still claim the
+                // full width so `⋮` stays pinned right.
+                val width = MeasureSpec.getSize(widthMeasureSpec)
+                super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), heightMeasureSpec)
+                setMeasuredDimension(width, measuredHeight)
+            }
+        }.apply {
+            orientation = HORIZONTAL
+            addView(scroller, LayoutParams(WRAP_CONTENT, MATCH_PARENT, 1f))
+            addView(newTab, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
+        }
+        addView(tabsRow, LayoutParams(0, MATCH_PARENT, 1f))
         pendingLabel = TextView(context).apply {
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
@@ -76,8 +92,6 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
         }
         addView(pendingLabel, LayoutParams(0, MATCH_PARENT, 1f))
 
-        newTab = barButton(R.drawable.ic_add, R.string.terminal_new_tab) { onNewTabClicked() }
-        strip.addView(newTab, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
         lateinit var menu: View
         menu = barButton(R.drawable.ic_more_vert, R.string.home_menu_description) { onMenuClicked(menu) }
         addView(menu, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
@@ -100,15 +114,14 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
     fun setPendingLabel(label: CharSequence?) {
         pendingLabel.text = label
         pendingLabel.visibility = if (label != null) VISIBLE else GONE
-        scroller.visibility = if (label != null) GONE else VISIBLE
+        tabsRow.visibility = if (label != null) GONE else VISIBLE
     }
 
     /** Append a tab and scroll it into view; returns its index. */
     fun addTab(label: CharSequence): Int {
         val tab = buildTab(label)
-        // Before the trailing `+`.
-        strip.addView(tab, tabCount(), LayoutParams(WRAP_CONTENT, MATCH_PARENT))
-        scrollIntoView(newTab)
+        strip.addView(tab, LayoutParams(WRAP_CONTENT, MATCH_PARENT))
+        scrollIntoView(tab)
         return tabCount() - 1
     }
 
@@ -117,7 +130,7 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
         if (selectedIndex >= tabCount()) selectedIndex = tabCount() - 1
     }
 
-    private fun tabCount(): Int = strip.childCount - 1
+    private fun tabCount(): Int = strip.childCount
 
     /** Highlight [index] and scroll it into view. */
     fun setSelected(index: Int) {
