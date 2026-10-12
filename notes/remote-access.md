@@ -288,8 +288,13 @@ scratch `ssh -F` config with `UserKnownHostsFile` and `BatchMode`.
 
 Protocol and behaviour follow upstream's Rust agent (`agent/`; source:
 `https://sshyeet.com/dl/src.tar.gz`, version `npnvl5ppj3`, reviewed
-2026-10-08). `remote/` stays our own implementation rather than a
-vendored copy.
+2026-10-08). Since 2026-10 that tarball (`vl44lbzbz1` as of 2026-10-11)
+is the whole thing under the Unlicense: the agent, the Go relay (`cmd/sshyeet-relay/`,
+`internal/relay/`, configured by `SSHYEET_*` env vars, so it can be
+self-hosted and pointed at from the relay URL field), the wire protocol
+(`internal/proto/proto.go`, which still matches `remote/README.md`) and
+the Nix builds.
+
 Deliberate differences: no `comment` in the hello, `web`/`latest`
 ignored, `-R` forwarding, and a saved host key
 by default. Open questions: is v1 stable and will the

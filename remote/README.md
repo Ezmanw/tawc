@@ -7,6 +7,9 @@ relay. Design, trust model and tests: [notes/remote-access.md](../notes/remote-a
 This file specifies the relay side, so any relay speaking it works in
 place of sshyeet.com. It is what this crate expects (and what the fake
 relay in `tests/support/` implements), matching sshyeet's v1 protocol.
+sshyeet's own relay is public domain (the Unlicense) and ships in
+`https://sshyeet.com/dl/src.tar.gz` (`cmd/sshyeet-relay/`), so
+self-hosting one is an option too.
 
 ## Relay protocol, v1
 

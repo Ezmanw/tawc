@@ -213,10 +213,12 @@ clean. Open items, and what each needs:
    all 31 sources in ~90 s, the scanner ignored exactly the 18 listed
    paths and flagged nothing else, zero fetches after the scan, and
    `fdroid build` reported "1 build succeeded".
-2. **Relay (`sshyeet.com`) free-software question.** The published tree
-   (`https://sshyeet.com/dl/src.tar.gz`) is the MIT client/agent only; the
-   relay server is not published. So opt-in relay mode most likely gets
-   `AntiFeatures: [NonFreeNet]` in the recipe (recipe-only).
+2. **Relay (`sshyeet.com`) free-software question.** Answered: the
+   relay server is open source. `https://sshyeet.com/dl/src.tar.gz`
+   (checked 2026-10-11) holds both halves, the Rust agent and the Go
+   relay (`cmd/sshyeet-relay/`, `internal/relay/`), under the Unlicense. The
+   relay URL is a user-set field, so anyone can self-host it. No
+   `NonFreeNet` anti-feature.
 3. **Describe Remote Access in `full_description.txt`.** F-Droid reads
    fastlane metadata at the commit of the latest built version, so this
    only takes effect through a new tag.
