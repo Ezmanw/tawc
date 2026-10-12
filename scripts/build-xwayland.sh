@@ -21,6 +21,7 @@
 #   scripts/build-xwayland.sh --abi=x86_64
 #   scripts/build-xwayland.sh --clean   # wipe install + builddirs
 #   scripts/build-xwayland.sh --only=<lib>   # build just one stage
+#   scripts/build-xwayland.sh --fetch-only   # clone/download every source, build nothing
 #
 # Build-time deps (host packages): meson, ninja, pkg-config, python3,
 # python3-libxml2, xsltproc, autoconf, automake, libtool, perl, expat
@@ -36,12 +37,6 @@ source "$SCRIPT_DIR/lib/deps.sh"
 SRC_ROOT="$REPO_DIR/deps/xwayland-src"
 PATCH_ROOT="$REPO_DIR/deps/xwayland-patches"
 
-# libmd ships as a release tarball rather than a git repo, so it can't
-# live in deps/deps.list. Version + hash are the pin; bump both together.
-# sha512 of this tarball matches Alpine 3.19's libmd APKBUILD.
-LIBMD_VERSION="1.1.0"
-LIBMD_SHA256="1bd6aa42275313af3141c7cf2e5b964e8b1fd488025caf2f971f43b00776b332"
-
 # Where the X11 / XIM / ICE / wayland sockets live in our world. Patches
 # substitute @TAWC_TMP_PREFIX@ -> this; the compositor mkdirs it on startup.
 # Each install method's bind config surfaces this dir at /tmp/.X11-unix inside
@@ -55,15 +50,53 @@ TAWC_TMP_PREFIX="share/xtmp"
 ABI=aarch64
 CLEAN=0
 ONLY=""
+FETCH_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --abi=aarch64|--abi=arm64|--abi=arm64-v8a) ABI=aarch64 ;;
         --abi=x86_64) ABI=x86_64 ;;
         --clean) CLEAN=1 ;;
         --only=*) ONLY="${arg#--only=}" ;;
+        --fetch-only) FETCH_ONLY=1 ;;
         *) echo "ERROR: unknown arg: $arg" >&2; exit 1 ;;
     esac
 done
+
+# libmd ships as a release tarball rather than a git repo, so it can't
+# live in deps/deps.list. Version + hash are the pin; bump both together.
+# sha512 of this tarball matches Alpine 3.19's libmd APKBUILD.
+LIBMD_VERSION="1.1.0"
+LIBMD_SHA256="1bd6aa42275313af3141c7cf2e5b964e8b1fd488025caf2f971f43b00776b332"
+LIBMD_TARBALL="$SRC_ROOT/libmd-$LIBMD_VERSION.tar.xz"
+fetch_libmd_tarball() {
+    dep_fetch_tarball \
+        "https://archive.hadrons.org/software/libmd/libmd-$LIBMD_VERSION.tar.xz" \
+        "$LIBMD_SHA256" "$LIBMD_TARBALL"
+}
+
+# Ensure $name is checked out at its pinned commit (from deps/deps.list)
+# and patches from deps/xwayland-patches/<name>/ are applied. Idempotent: a
+# `.tawc-patches-applied-<sha>` sentinel (untracked, in the dep tree)
+# encodes a hash of the patch dir, so editing the patch set invalidates
+# it automatically. `scripts/update-deps.sh` wipes any sentinel on reset,
+# so the next build re-patches when the manifest moves too.
+clone_pinned() {
+    local name="$1"
+    local patch_dir="$PATCH_ROOT/$name"
+    dep_apply_patches "$name" "$patch_dir" "s|@TAWC_TMP_PREFIX@|$TAWC_TMP_PREFIX|g"
+}
+
+# --fetch-only: every source this script would clone or download, with
+# the patches applied, and nothing else — no NDK or host tools needed.
+# This is the F-Droid prebuild path (scripts/fetch-release-deps.sh): the
+# sources have to be on disk before F-Droid scans the tree.
+if [ "$FETCH_ONLY" = 1 ]; then
+    while IFS= read -r name; do
+        clone_pinned "$name"
+    done < <(deps_names_with_dest_prefix deps/xwayland-src/)
+    fetch_libmd_tarball
+    exit 0
+fi
 
 OUT_DIR="$REPO_DIR/build/xwayland-$ABI"
 PREFIX="$OUT_DIR/install"
@@ -140,18 +173,6 @@ CFLAGS_CROSS="-fPIC -O2 -DANDROID -D_GNU_SOURCE -I$PREFIX/include"
 LDFLAGS_CROSS="-L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib -Wl,-z,max-page-size=16384"
 
 # ── Helpers ──
-
-# Ensure $name is checked out at its pinned commit (from deps/deps.list)
-# and patches from deps/xwayland-patches/<name>/ are applied. Idempotent: a
-# `.tawc-patches-applied-<sha>` sentinel (untracked, in the dep tree)
-# encodes a hash of the patch dir, so editing the patch set invalidates
-# it automatically. `scripts/update-deps.sh` wipes any sentinel on reset,
-# so the next build re-patches when the manifest moves too.
-clone_pinned() {
-    local name="$1"
-    local patch_dir="$PATCH_ROOT/$name"
-    dep_apply_patches "$name" "$patch_dir" "s|@TAWC_TMP_PREFIX@|$TAWC_TMP_PREFIX|g"
-}
 
 # Generate a meson cross-file targeting the NDK toolchain. Regenerated
 # every run so the NDK path is always current.
@@ -520,13 +541,10 @@ stage_libmd() {
     # the version means bumping the hash with it.
     local src="$SRC_ROOT/libmd"
     if [ ! -d "$src" ]; then
-        local tarball="$SRC_ROOT/libmd-$LIBMD_VERSION.tar.xz"
-        dep_fetch_tarball \
-            "https://archive.hadrons.org/software/libmd/libmd-$LIBMD_VERSION.tar.xz" \
-            "$LIBMD_SHA256" "$tarball"
+        fetch_libmd_tarball
         echo "==> extracting libmd-$LIBMD_VERSION"
         mkdir -p "$src"
-        tar -xJf "$tarball" -C "$src" --strip-components=1
+        tar -xJf "$LIBMD_TARBALL" -C "$src" --strip-components=1
     fi
     build_autotools libmd
 }

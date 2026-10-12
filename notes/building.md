@@ -230,6 +230,19 @@ actually moves, so stale in-tree configure state (and untracked WIP)
 doesn't leak across commits; a same-pin reset leaves untracked files
 alone.
 
+**Fetching everything up front.** `scripts/fetch-release-deps.sh` clones
+every dep the release configuration builds (30 git trees plus the libmd
+tarball, via `scripts/build-xwayland.sh --fetch-only`) without building
+anything. With `--offline` it then creates `deps/.offline`, and from
+then on `dep_ensure`/`dep_fetch_tarball` fail instead of fetching. The
+F-Droid recipe runs exactly that in `prebuild`, because fdroidserver
+scans the source tree right after prebuild and never sees what the
+build clones later; the marker turns a dep missing from the script into
+a build failure rather than an unscanned clone. A new release-build dep
+therefore goes in that script too — the rig's verify mode
+(`scripts/fdroid/prepare.sh verify` + `run.sh`) is what catches it.
+Delete `deps/.offline` if one ever ends up in a dev checkout.
+
 | Path                                  | Used by                                       |
 |---------------------------------------|-----------------------------------------------|
 | `./deps/libhybris/`                        | `scripts/build-libhybris.sh`              |
@@ -705,9 +718,28 @@ Two traps, both hit for real:
   a new file (the commit is built from the index), but verify the result
   with `git diff --name-status upstream/master HEAD` before pushing.
 
+`scripts/fdroid/lint.sh` lints the repo recipe in place of the staged
+one and restores the staged copy afterwards; before that fix a lint run
+between `prepare.sh` and `run.sh` silently made the rig build the GitHub
+tag instead of the snapshot.
+
 `fdroid checkupdates` writes `AutoName:` into the recipe when it is
 absent and the CI job then fails its own `git diff --exit-code`, so that
 field has to be present and correct.
+
+**Reading the MR (!49349) without a token.** gitlab.com rejects anonymous
+REST calls for MR notes/discussions (`401`), WebFetch of the MR page gets
+Cloudflare's `403`, and no GitLab token lives on this machine (the fork
+remote is SSH). The anonymous **GraphQL** endpoint works:
+
+```bash
+curl -s -X POST https://gitlab.com/api/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ project(fullPath:\"fdroid/fdroiddata\") { mergeRequest(iid:\"49349\") { discussions(first:50) { nodes { resolved notes(first:20) { nodes { author { username } createdAt system body position { newPath newLine } } } } } } } }"}'
+```
+
+Anonymous REST still works for the MR itself, its diff, commits and
+pipelines (`/api/v4/projects/fdroid%2Ffdroiddata/merge_requests/49349[/diffs|/commits|/pipelines]`),
+and for the fork's branch (`projects/sphi%2Ffdroiddata/repository/...`).
 
 ### Third-party license text (checked-in asset)
 

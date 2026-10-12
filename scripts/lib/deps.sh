@@ -30,6 +30,14 @@
 #                         (HEAD + tracked-edit hash). Read-only; used by
 #                         Gradle as an input property so dep-built
 #                         artifacts track checkout content.
+#   deps_names_with_dest_prefix <dest-prefix/>
+#                      -- echo the names whose dest starts with the prefix.
+#
+# Offline mode: if `deps/.offline` exists, dep_ensure and dep_fetch_tarball
+# refuse to download anything and fail instead. The F-Droid recipe
+# creates it after `scripts/fetch-release-deps.sh --offline` has fetched
+# every dep, so a dep that script forgot fails the build loudly rather
+# than being cloned after F-Droid's source scan has run.
 #
 # dep_ensure and dep_apply_patches run deps_verify_all first (once per
 # process), so any build that touches one dep fails on drift in any other.
@@ -50,6 +58,15 @@ if [ -z "${DEPS_REPO_DIR:-}" ]; then
 fi
 DEPS_MANIFEST="$DEPS_REPO_DIR/deps/deps.list"
 DEPS_LOCKFILE="$DEPS_REPO_DIR/build/.deps.lock"
+DEPS_OFFLINE_MARKER="$DEPS_REPO_DIR/deps/.offline"
+
+# Non-zero (with a message) if offline mode forbids fetching $1.
+_deps_check_online() {
+    [ -e "$DEPS_OFFLINE_MARKER" ] || return 0
+    echo "ERROR: $1 is not fetched and ${DEPS_OFFLINE_MARKER#$DEPS_REPO_DIR/} forbids fetching." >&2
+    echo "  Add it to scripts/fetch-release-deps.sh, which runs before the marker is set." >&2
+    return 1
+}
 
 # Walk deps.list emitting (name, repo, commit, ref, dest) tab-separated.
 # Skips comments and blank lines. We only have ~30 lines; a pure-bash
@@ -67,6 +84,10 @@ _deps_emit() {
 
 deps_all_names() {
     _deps_emit | cut -f1
+}
+
+deps_names_with_dest_prefix() {
+    _deps_emit | awk -F'\t' -v p="$1" 'index($5, p) == 1 { print $1 }'
 }
 
 # Look up <name> and populate DEP_NAME/DEP_REPO/DEP_COMMIT/DEP_REF/DEP_DEST.
@@ -242,7 +263,7 @@ deps_tree_state() {
                 while IFS= read -r name; do
                     matched=1
                     _dep_tree_state_one "$name" || return 1
-                done < <(_deps_emit | awk -F'\t' -v p="$arg" 'index($5, p) == 1 { print $1 }')
+                done < <(deps_names_with_dest_prefix "$arg")
                 if [ "$matched" -eq 0 ]; then
                     echo "ERROR: no dep dest starts with '$arg'" >&2
                     return 1
@@ -267,6 +288,7 @@ _deps_verify_all_once() {
 
 _dep_ensure_inner() {
     if [ ! -d "$DEP_DEST/.git" ]; then
+        _deps_check_online "dep '$DEP_NAME'" || return 1
         _dep_clone || return 1
         if ! _dep_have_commit; then
             _dep_fetch_commit || {
@@ -372,6 +394,7 @@ dep_reset() {
 dep_fetch_tarball() {
     local url="$1" want="$2" dest="$3" actual
     if [ ! -f "$dest" ]; then
+        _deps_check_online "tarball $url" || return 1
         echo "==> downloading $url"
         mkdir -p "$(dirname "$dest")"
         curl -fsSL -o "$dest.part" "$url"

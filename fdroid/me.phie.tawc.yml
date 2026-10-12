@@ -114,12 +114,13 @@ Builds:
     #                          of the tree that would download prebuilt
     #                          distro packages.
     #
-    # settings.gradle.kts clones the pinned termux-app checkout at
-    # settings-evaluation time (the in-app terminal widget is built from
-    # it); doing it here instead keeps the fetch in the phase where
-    # fetching is expected. Every other pinned dep in deps/deps.list is
-    # cloned on demand by the build script that needs it — only the ones
-    # this configuration actually uses.
+    # fetch-release-deps.sh clones every pinned dep this configuration
+    # builds (deps/deps.list; 30 git trees plus the libmd tarball) so
+    # they are on disk when fdroidserver scans the source, which happens
+    # right after prebuild. Left to the build scripts, they would be
+    # cloned after the scan and never looked at (MR !49349 review).
+    # --offline then forbids any later fetch, so a dep missing from that
+    # script fails the build instead of slipping past the scan.
     #
     # cargo-ndk lands in $CARGO_HOME/bin and the Gradle step runs in a
     # fresh process, but ~/.cargo/bin is on the build user's PATH on the
@@ -129,17 +130,36 @@ Builds:
       - cd "$(git rev-parse --show-toplevel)"
       - printf 'tawcMethods=tawcroot\ntawcGraphics=libhybris,cpu\n' >> gradle.properties
       - cargo install cargo-ndk --version 4.1.2 --locked
-      - scripts/ensure-deps.sh termux-app
+      - scripts/fetch-release-deps.sh --offline
 
-    # No scanignore/scandelete: the scanner reports nothing. It runs
-    # after prebuild, when deps/termux-app is the only checkout on disk —
-    # every other dep is cloned later by the Gradle build, so the scanner
-    # never sees those trees. It deletes the gradle wrappers it finds
-    # (ours and termux-app's) plus gradle/gradle-daemon-jvm.properties,
+    # What the scanner trips on in the dep trees, all false positives.
+    # Every entry must match something or the scanner errors ("Unused
+    # scanignore path"), so a dep bump that moves one of these has to
+    # update this list too.
+    #   - libhybris: two symbol *lists* named `*.so.txt`, text files that
+    #     match the shared-library name pattern.
+    #   - libxkbcommon: UTF-16/32 test inputs, flagged as extensionless
+    #     binaries.
+    #   - smithay, rutabaga_gfx: Cargo.toml files without a sibling
+    #     Cargo.lock. Both are `path` deps of compositor/Cargo.toml, whose
+    #     lock file pins their whole graph.
+    # Our own tree is clean. The scanner deletes the gradle wrappers it
+    # finds (ours and termux-app's) plus gradle/gradle-daemon-jvm.properties,
     # which is expected: fdroidserver builds with its own verified Gradle
     # via gradlew-fdroid. Dropping the daemon-JVM pin means the build
     # takes whatever JDK the buildserver defaults to — currently 21, which
     # is what this build needs.
+    scanignore:
+      - deps/libhybris/utils/generate_nfc/symbols
+      - deps/libxkbcommon/test/data/rules
+      - deps/smithay/Cargo.toml
+      - deps/smithay/*/Cargo.toml
+      - deps/rutabaga_gfx/Cargo.toml
+      - deps/rutabaga_gfx/ffi/Cargo.toml
+      - deps/rutabaga_gfx/kumquat/server/Cargo.toml
+      - deps/rutabaga_gfx/third_party/mesa3d/src/magma/Cargo.toml
+      - deps/rutabaga_gfx/third_party/mesa3d/src/util/rust/Cargo.toml
+      - deps/rutabaga_gfx/third_party/mesa3d/src/virtio/*/Cargo.toml
     gradle:
       - yes
 

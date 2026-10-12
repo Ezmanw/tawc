@@ -22,6 +22,12 @@ curl --silent https://gitlab.com/fdroid/fdroidserver/-/archive/master/fdroidserv
 export PATH="$fdroidserver:$PATH"
 export PYTHONPATH="$fdroidserver:$fdroidserver/examples"
 export PYTHONUNBUFFERED=true serverwebroot=/tmp
+# prepare.sh may have staged a rewritten copy for a build; put it back
+# afterwards, or run.sh would build the repo recipe (GitHub, tag commit).
+if [ -f metadata/me.phie.tawc.yml ]; then
+    cp metadata/me.phie.tawc.yml /tmp/staged.yml
+    trap "cp /tmp/staged.yml metadata/me.phie.tawc.yml" EXIT
+fi
 cp /tmp/recipe.yml metadata/me.phie.tawc.yml
 echo "=== fdroid lint ==="
 fdroid lint me.phie.tawc && echo "(lint clean)"

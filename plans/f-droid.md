@@ -190,6 +190,41 @@ then human steps 3.3 and 4.
   it builds a tag that includes the change.
 - Remaining: **HUMAN** — open the MR (step 3.3), then step 4.
 
+## Review 2026-10-10 (MR !49349, static review by mezinster; label waiting-on-response)
+
+Reviewed at v4 (`d9efb4a`): reproducible build and R8 confirmed, VirusTotal
+clean. Open items, and what each needs:
+
+1. **Deps cloned mid-build are never scanned.** Only termux-app is on disk
+   when the scanner runs; Gradle clones the other 28 git deps and
+   `build-xwayland.sh` downloads the libmd tarball afterwards. Asked for
+   either git submodules (repo change → new tag) or fetching everything
+   in `prebuild`. linsui was asked which they prefer; no answer yet.
+   **Prebuild fetching is implemented (2026-10-11):**
+   `scripts/fetch-release-deps.sh --offline` is the recipe's prebuild
+   step; it fetches all 30 git deps plus the libmd tarball
+   (`build-xwayland.sh --fetch-only`) and sets `deps/.offline`, after
+   which `scripts/lib/deps.sh` refuses to fetch. The recipe gained ten
+   `scanignore` entries for scanner false positives in the dep trees
+   (`*.so.txt` symbol lists, UTF-16 test data, Cargo.toml files covered
+   by compositor/Cargo.lock). It needs a new tag: the recipe's prebuild
+   calls a script that v4 does not have. **Rig verify run passed**
+   (`build/fdroid/logs/verify-20261011-185329.log`): prebuild fetched
+   all 31 sources in ~90 s, the scanner ignored exactly the 18 listed
+   paths and flagged nothing else, zero fetches after the scan, and
+   `fdroid build` reported "1 build succeeded".
+2. **Relay (`sshyeet.com`) free-software question.** The published tree
+   (`https://sshyeet.com/dl/src.tar.gz`) is the MIT client/agent only; the
+   relay server is not published. So opt-in relay mode most likely gets
+   `AntiFeatures: [NonFreeNet]` in the recipe (recipe-only).
+3. **Describe Remote Access in `full_description.txt`.** F-Droid reads
+   fastlane metadata at the commit of the latest built version, so this
+   only takes effect through a new tag.
+4. On-device tester items (first-start permissions, PCAPdroid) — nothing
+   for us to do.
+
+Replying on the MR is **HUMAN**.
+
 ## Step 1 — repo hygiene fixes (agent, in this repo)
 
 1. Pin and verify the tarball deps: add sha256 checks to the libmd fetch in
