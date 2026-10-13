@@ -15,6 +15,5 @@ A failing run also leaves its slots behind (`exptest-*`,
 `custtest-*`), filling the disk for the next run; remove them with the
 broker's `uninstall` action.
 
-`tawc-rootless`'s config asks for a 24 GB data partition, but its
-`/data` is still 5.9 GB: the existing userdata image was never grown.
-Getting the space needs a data wipe (and a fresh `arch` install).
+`tawc-rootless` was wiped to a 24 GB `/data` on 2026-10-13, so
+rerun both tests there; delete this issue if they pass.

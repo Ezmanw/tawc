@@ -14,7 +14,7 @@
 # Override the AVD name with TAWC_AVD=<name>.
 #
 # Usage:
-#   scripts/emulator.sh start [rooted|rootless] [--cold]
+#   scripts/emulator.sh start [rooted|rootless] [--cold] [--wipe-data]
 #   scripts/emulator.sh stop  [rooted|rootless]
 #
 # `start` is idempotent: if the AVD is already running it just (re-)applies
@@ -62,7 +62,8 @@ resolve_variant() {
 # grep for "tawc" don't match. Accept x86_64 and aarch64 hosts.
 running_pid() {
     local avd=$1
-    pgrep -af '/qemu-system-(x86_64|aarch64) ' | awk -v avd="$avd" '
+    # pgrep exits 1 on no match; don't let pipefail turn that into set -e.
+    { pgrep -af '/qemu-system-(x86_64|aarch64) ' || true; } | awk -v avd="$avd" '
         index($0, "-avd " avd) {print $1; exit}
     '
 }
@@ -231,12 +232,19 @@ cmd_start() {
     for arg in "$@"; do
         case "$arg" in
             --cold) args+=(-no-snapshot-load) ;;
+            # Factory-reset userdata; also regrows /data to the config's
+            # disk.dataPartition.size. Must be stopped first.
+            --wipe-data) args+=(-wipe-data) ;;
             *) echo "ERROR: unknown arg: $arg" >&2; usage 1 ;;
         esac
     done
 
     local already=0
     if [ -n "$(running_pid "$AVD_NAME")" ]; then
+        if [[ " ${args[*]} " == *" -wipe-data "* ]]; then
+            echo "ERROR: --wipe-data needs '$AVD_NAME' stopped first" >&2
+            exit 1
+        fi
         echo "==> AVD '$AVD_NAME' already running; skipping launch, just refreshing setup"
         already=1
     fi
@@ -280,6 +288,8 @@ cmd_start() {
     emu_pid=$(running_pid "$AVD_NAME")
     while [ -z "$serial" ]; do
         sleep 2
+        # The launcher may not have exec'd qemu yet (slow with --wipe-data).
+        [ -n "$emu_pid" ] || emu_pid=$(running_pid "$AVD_NAME")
         if [ -n "$emu_pid" ] && ! kill -0 "$emu_pid" 2>/dev/null; then
             echo "ERROR: emulator died — see $LOG" >&2
             tail -20 "$LOG" >&2

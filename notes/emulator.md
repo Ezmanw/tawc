@@ -399,6 +399,7 @@ Launch / shut down:
     scripts/emulator.sh start rooted          # explicit rooted
     scripts/emulator.sh start rootless        # stock AVD
     scripts/emulator.sh start rooted --cold   # skip snapshot, full cold boot
+    scripts/emulator.sh start rootless --wipe-data  # factory reset (stop first)
     scripts/emulator.sh stop                  # stops every running TAWC AVD
     scripts/emulator.sh stop rootless         # only stop the rootless one
     scripts/emulator.sh stop rooted           # only stop the rooted one
@@ -426,6 +427,11 @@ is reachable the script errors out instead of launching.
 `stop` does `adb emu kill` against the AVD's actual serial so quickboot
 saves cleanly, falls back to SIGTERM, and finally SIGKILLs after a 30s
 grace period.
+
+`--wipe-data` is also how `/data` picks up a bigger
+`disk.dataPartition.size` in `config.ini`: raising it only grows the
+disk image, not the guest's encrypted ext4, so `/data` stays at its old
+size until a wipe. `tawc-rootless` is 24 GB (wiped 2026-10-13).
 
 The script waits for `sys.boot_completed` then exits, leaving the
 emulator running in the background. Logs go to `/tmp/emulator.log`
@@ -553,4 +559,4 @@ you boot the AVD by hand without `emulator.sh start`, run `adb shell
 ## Magisk policy persistence
 Once the policies row is in `/data/adb/magisk.db`, it survives
 emulator reboots and snapshot save/load. If you wipe the AVD
-(`emulator -avd tawc-rooted -wipe-data`), repeat steps 4–6.
+(`scripts/emulator.sh start rooted --wipe-data`), repeat steps 4–6.
