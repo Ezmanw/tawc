@@ -2,7 +2,8 @@
 
 Two related gaps between tawcroot and Linux in how signals interact with
 blocking syscalls. Upstream: [#27](https://github.com/wmww/tawc/issues/27)
-(problem B).
+(problem B). Resolution plan:
+[plans/tawcroot-blocking-syscalls-and-signals.md](../plans/tawcroot-blocking-syscalls-and-signals.md).
 
 ## A. Blocking calls completed inside the handler ignore signals
 
