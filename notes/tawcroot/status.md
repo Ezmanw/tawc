@@ -413,9 +413,8 @@ covered by unit/hosted/smoke tests.)
   `io_pgetevents` take a mask the kernel applies for the wait. A guest
   handler that interrupts such a wait made with `SIGSYS` in that mask
   runs with our trap blocked, and its first trapped syscall kills the
-  process. Not trapped on purpose: the poll family is hot, and nothing
-  observed puts `SIGSYS` in a wait mask (full-mask handlers were the
-  real case; `sigfillset` into `ppoll` is the one plausible shape).
+  process (wmww/tawc#27). Not trapped yet: the poll family is hot. See
+  issues/tawcroot-blocking-syscalls-and-signals.md for fixes.
 - **Undersized `sigaltstack`s are substituted.** A guest altstack
   below `TAWC_SIGALT_MIN` is replaced by a tawcroot-owned 16 KiB slot
   (sigsys-handler.md "Handler stack budget"), so the guest's *own*
