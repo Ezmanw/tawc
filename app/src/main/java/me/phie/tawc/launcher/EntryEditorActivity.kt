@@ -395,6 +395,7 @@ class EntryEditorActivity : AppCompatActivity() {
             val scratch = File(cacheDir, "icon-import")
             val result = withContext(Dispatchers.IO) {
                 runCatching {
+                    scratch.mkdirs()
                     val r = IconImport.import(this@EntryEditorActivity, uri, scratch)
                     val preview = File.createTempFile("preview", ".png", scratch).apply { writeBytes(r.bytes) }
                     r to preview
