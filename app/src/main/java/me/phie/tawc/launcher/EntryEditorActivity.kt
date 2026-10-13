@@ -653,7 +653,7 @@ class EntryEditorActivity : AppCompatActivity() {
     private fun confirmRemove(reset: Boolean) {
         val e = entry ?: return
         val label = nameField.text.toString().ifBlank { e.name.ifBlank { e.id } }
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setMessage(getString(if (reset) R.string.editor_reset_confirm else R.string.editor_delete_confirm, label))
             .setPositiveButton(if (reset) R.string.editor_reset else R.string.editor_delete) { _, _ ->
                 val written = runCatching {
@@ -670,6 +670,11 @@ class EntryEditorActivity : AppCompatActivity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+        // Red Delete, neutral Cancel, as on the app's other confirms.
+        if (!reset) dialog.getButton(DialogInterface.BUTTON_POSITIVE)?.setTextColor(getColor(R.color.tawc_danger))
+        dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
+            btn.setTextColor(MaterialColors.getColor(btn, com.google.android.material.R.attr.colorOnSurfaceVariant))
+        }
     }
 
     companion object {
