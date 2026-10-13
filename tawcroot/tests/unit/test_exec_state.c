@@ -15,6 +15,30 @@
 
 #include "exec_state.h"
 
+/* Pointer arrays for a read state (freed by the caller). */
+static const char **split_argv(const tawcroot_exec_state *st)
+{
+	const char **v = malloc((st->argc + 1) * sizeof *v);
+	tawcroot_exec_state_split(st->argv_strings, st->argc, v);
+	return v;
+}
+
+static const char **split_envp(const tawcroot_exec_state *st)
+{
+	const char **v = malloc((st->envc + 1) * sizeof *v);
+	tawcroot_exec_state_split(st->envp_strings, st->envc, v);
+	return v;
+}
+
+/* Write a small valid state into buf; returns its size. */
+static size_t small_state(uint8_t *buf, size_t cap)
+{
+	const char *argv[] = { "p", "q", NULL };
+	const char *envp[] = { "E=1", NULL };
+	long w = tawcroot_exec_state_write(buf, cap, "/p", 2, argv, envp, NULL);
+	return w > 0 ? (size_t)w : 0;
+}
+
 test(exec_state_basic_roundtrip)
 {
 	const char *argv[] = { "/bin/true", "alpha", "beta", NULL };
@@ -27,50 +51,65 @@ test(exec_state_basic_roundtrip)
 	long w = tawcroot_exec_state_write(buf, need, "/bin/true", 3, argv, envp, NULL);
 	test_int_eq((int)w, (int)need);
 
-	const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, argv_buf, envp_buf, &out), 0);
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out), 0);
 
 	test_str_eq(out.path, "/bin/true");
 	test_int_eq((int)out.argc, 3);
 	test_int_eq((int)out.envc, 2);
-	test_str_eq(out.argv[0], "/bin/true");
-	test_str_eq(out.argv[1], "alpha");
-	test_str_eq(out.argv[2], "beta");
-	test_ptr_eq(out.argv[3], NULL);
-	test_str_eq(out.envp[0], "PATH=/bin");
-	test_str_eq(out.envp[1], "HOME=/root");
-	test_ptr_eq(out.envp[2], NULL);
-	test_ptr_eq(out.proctitle, NULL);  /* no extras → absent */
+	const char **av = split_argv(&out), **ev = split_envp(&out);
+	test_str_eq(av[0], "/bin/true");
+	test_str_eq(av[1], "alpha");
+	test_str_eq(av[2], "beta");
+	test_ptr_eq(av[3], NULL);
+	test_str_eq(ev[0], "PATH=/bin");
+	test_str_eq(ev[1], "HOME=/root");
+	test_ptr_eq(ev[2], NULL);
+	/* argv bytes: "/bin/true alpha beta" NUL-joined */
+	test_int_eq((int)out.cmdline_bytes, 21);
+	test_int_eq((int)out.argv_bytes, 21);
+	test_ptr_eq(out.rootfs_host, NULL);
+	free(av); free(ev);
 	free(buf);
 }
 
-test(exec_state_carries_proctitle)
+/* The handler builds the state in steps (strings land straight in
+ * the memfd); the result must match the one-shot writer byte for
+ * byte. */
+test(exec_state_stepwise_matches_write)
 {
-	/* v7: the proctitle string commit() uses as the re-exec argv[0]
-	 * to size the kernel arg region. Length-significant (may end in
-	 * padding spaces), so round-trip must be byte-exact. */
 	const char *argv[] = { "worker", "--flag", NULL };
-	const char *envp[] = { NULL };
+	const char *envp[] = { "A=1", NULL };
 	tawcroot_exec_state_extras ex = { 0 };
-	ex.proctitle = "worker --flag   ";
+	ex.rootfs_host = "/host/root";
 
 	size_t need = tawcroot_exec_state_estimate_bytes("/bin/worker", 2,
 	                                                 argv, envp, &ex);
-	uint8_t *buf = malloc(need);
-	test_nonnull(buf);
-	test_int_eq((int)tawcroot_exec_state_write(buf, need, "/bin/worker",
+	uint8_t *one = calloc(1, need), *two = calloc(1, need);
+	test_int_eq((int)tawcroot_exec_state_write(one, need, "/bin/worker",
 	                                           2, argv, envp, &ex),
 	            (int)need);
 
-	const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
-	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, argv_buf,
-	                                          envp_buf, &out), 0);
-	test_str_eq(out.proctitle, "worker --flag   ");
-	free(buf);
+	size_t len;
+	test_int_eq((int)tawcroot_exec_state_begin(two, need, &len,
+	                                           "/bin/worker"), 0);
+	size_t argv_off = len;
+	test_int_eq((int)tawcroot_exec_state_append_str(two, need, &len, "worker"), 0);
+	test_int_eq((int)tawcroot_exec_state_append_str(two, need, &len, "--flag"), 0);
+	size_t envp_off = len;
+	test_int_eq((int)tawcroot_exec_state_append_str(two, need, &len, "A=1"), 0);
+	tawcroot_exec_state_set_args(two, argv_off, 2, envp_off - argv_off,
+	                             1, len - envp_off,
+	                             (uint32_t)(envp_off - argv_off));
+	test_int_eq((int)tawcroot_exec_state_finish(two, need, &len, &ex), 0);
+	test_int_eq((int)len, (int)need);
+	test_true(memcmp(one, two, need) == 0);
+
+	/* Steps refuse to run past cap instead of writing past it. */
+	size_t l2 = need - 2;
+	test_int_eq((int)tawcroot_exec_state_append_str(two, need, &l2, "xyz"),
+	            -28 /* ENOSPC */);
+	free(one); free(two);
 }
 
 test(exec_state_zero_argv_envp)
@@ -82,15 +121,16 @@ test(exec_state_zero_argv_envp)
 	test_int_eq((int)tawcroot_exec_state_write(buf, need, "/x", 0, argv, envp, NULL),
 	            (int)need);
 
-	const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, argv_buf, envp_buf, &out), 0);
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out), 0);
 	test_str_eq(out.path, "/x");
 	test_int_eq((int)out.argc, 0);
 	test_int_eq((int)out.envc, 0);
-	test_ptr_eq(out.argv[0], NULL);
-	test_ptr_eq(out.envp[0], NULL);
+	test_int_eq((int)out.argv_bytes, 0);
+	test_int_eq((int)out.cmdline_bytes, 1);  /* runs as argv = {""} */
+	const char **av = split_argv(&out);
+	test_ptr_eq(av[0], NULL);
+	free(av);
 	free(buf);
 }
 
@@ -126,18 +166,6 @@ test(exec_state_buf_too_small)
 	            -28 /* ENOSPC */);
 }
 
-test(exec_state_too_many_args)
-{
-	const char *argv[TAWCROOT_EXEC_STATE_MAX_ARGS + 2];
-	for (int i = 0; i < TAWCROOT_EXEC_STATE_MAX_ARGS + 1; i++) argv[i] = "x";
-	argv[TAWCROOT_EXEC_STATE_MAX_ARGS + 1] = NULL;
-	const char *envp[] = { NULL };
-	uint8_t buf[1024];
-	test_int_eq((int)tawcroot_exec_state_write(buf, sizeof buf, "/y",
-	            TAWCROOT_EXEC_STATE_MAX_ARGS + 1, argv, envp, NULL),
-	            -7 /* E2BIG */);
-}
-
 test(exec_state_rejects_bad_magic)
 {
 	const char *argv[] = { "p", NULL };
@@ -148,10 +176,8 @@ test(exec_state_rejects_bad_magic)
 	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)buf;
 	h->magic = 0xdeadbeef;
 
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, sizeof buf, abuf, ebuf, &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, sizeof buf, &out),
 	            -22);
 }
 
@@ -162,10 +188,8 @@ test(exec_state_rejects_bad_version)
 	uint8_t buf[256];
 	tawcroot_exec_state_write(buf, sizeof buf, "/p", 1, argv, envp, NULL);
 	((tawcroot_exec_state_header *)buf)->version = 99;
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, sizeof buf, abuf, ebuf, &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, sizeof buf, &out),
 	            -22);
 }
 
@@ -178,12 +202,9 @@ test(exec_state_rejects_truncated_strings)
 
 	/* Truncate to just the header. Reader should refuse — claimed
 	 * string_bytes won't fit. */
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
 	test_int_eq((int)tawcroot_exec_state_read(buf,
-	                                          sizeof(tawcroot_exec_state_header),
-	                                          abuf, ebuf, &out),
+	                                          sizeof(tawcroot_exec_state_header), &out),
 	            -22);
 	(void)w;
 }
@@ -196,10 +217,8 @@ test(exec_state_rejects_offset_past_strings)
 	tawcroot_exec_state_write(buf, sizeof buf, "/p", 1, argv, envp, NULL);
 	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)buf;
 	h->path_off = h->string_bytes + 100;
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, sizeof buf, abuf, ebuf, &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, sizeof buf, &out),
 	            -22);
 }
 
@@ -223,10 +242,8 @@ test(exec_state_carries_shm_table)
 	long w = tawcroot_exec_state_write(buf, need, "/p", 1, argv, envp, &ex);
 	test_int_eq((int)w, (int)need);
 
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, abuf, ebuf, &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out),
 		    0);
 	test_int_eq((int)out.n_shm, 3);
 	test_str_eq(out.shm_name[0], "moz-ipc-1");
@@ -260,10 +277,8 @@ test(exec_state_carries_identity)
 	long w = tawcroot_exec_state_write(buf, need, "/p", 1, argv, envp, &ex);
 	test_int_eq((int)w, (int)need);
 
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, abuf, ebuf, &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out),
 		    0);
 	test_int_eq(out.has_identity, 1);
 	test_int_eq((int)out.identity.ruid, 994);
@@ -280,7 +295,7 @@ test(exec_state_carries_identity)
 	test_int_eq((int)tawcroot_exec_state_write(buf, need, "/p", 1, argv,
 						   envp, NULL),
 		    (int)need);
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, abuf, ebuf, &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out),
 		    0);
 	test_int_eq(out.has_identity, 0);
 	free(buf);
@@ -308,11 +323,8 @@ test(exec_state_rejects_oversize_identity_ngroups)
 	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)buf;
 	h->identity.ngroups = TAWC_IDENTITY_NGROUPS + 1;
 
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, (size_t)w, abuf, ebuf,
-						  &out),
+	test_int_eq((int)tawcroot_exec_state_read(buf, (size_t)w, &out),
 		    -22 /* EINVAL */);
 	free(buf);
 }
@@ -355,26 +367,24 @@ test(exec_state_with_many_args_and_env)
 	                                           NA, argv, envp, NULL),
 	            (int)need);
 
-	const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, abuf, ebuf, &out), 0);
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out), 0);
 	test_int_eq((int)out.argc, NA);
 	test_int_eq((int)out.envc, NE);
-	for (int i = 0; i < NA; i++) test_str_eq(out.argv[i], "argument-with-some-length");
-	for (int i = 0; i < NE; i++) test_str_eq(out.envp[i], "VAR=value");
-	test_ptr_eq(out.argv[NA], NULL);
-	test_ptr_eq(out.envp[NE], NULL);
+	const char **av = split_argv(&out), **ev = split_envp(&out);
+	for (int i = 0; i < NA; i++) test_str_eq(av[i], "argument-with-some-length");
+	for (int i = 0; i < NE; i++) test_str_eq(ev[i], "VAR=value");
+	test_ptr_eq(av[NA], NULL);
+	test_ptr_eq(ev[NE], NULL);
+	free(av); free(ev);
 	free(buf);
 }
 
-/* A glob-heavy exec (`rm *` over a big dir, a linker invocation) passes
- * hundreds-to-thousands of args. Pre-fix MAX_ARGS was 256, so each such
- * exec E2BIG'd even though the kernel allows ~2 MB of argv. Serialize a
- * near-cap argv + a large env and confirm it round-trips. */
-test(exec_state_near_cap_args_roundtrip)
+/* No argc/envc caps (the old format stopped at 4096 / 1024): a
+ * 100k-arg state round-trips. */
+test(exec_state_100k_args_roundtrip)
 {
-	enum { NA = 2000, NE = 500 };
+	enum { NA = 100000, NE = 5000 };
 	static const char *argv[NA + 1];
 	static const char *envp[NE + 1];
 	for (int i = 0; i < NA; i++) argv[i] = "globbed-filename-12345.txt";
@@ -388,16 +398,64 @@ test(exec_state_near_cap_args_roundtrip)
 	test_int_eq((int)tawcroot_exec_state_write(buf, need, "/usr/bin/rm",
 	                                           NA, argv, envp, NULL),
 	            (int)need);
+	/* The header no longer scales with argc. */
+	test_true(sizeof(tawcroot_exec_state_header) < 2048);
 
-	static const char *abuf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	static const char *ebuf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, need, abuf, ebuf, &out), 0);
+	test_int_eq((int)tawcroot_exec_state_read(buf, need, &out), 0);
 	test_int_eq((int)out.argc, NA);
 	test_int_eq((int)out.envc, NE);
-	test_str_eq(out.argv[0], "globbed-filename-12345.txt");
-	test_str_eq(out.argv[NA - 1], "globbed-filename-12345.txt");
-	test_str_eq(out.envp[NE - 1], "SOME_EXPORTED_VAR=some-value");
-	test_ptr_eq(out.argv[NA], NULL);
+	const char **av = split_argv(&out), **ev = split_envp(&out);
+	test_str_eq(av[0], "globbed-filename-12345.txt");
+	test_str_eq(av[NA - 1], "globbed-filename-12345.txt");
+	test_str_eq(ev[NE - 1], "SOME_EXPORTED_VAR=some-value");
+	test_ptr_eq(av[NA], NULL);
+	test_ptr_eq(ev[NE], NULL);
+	free(av); free(ev);
 	free(buf);
+}
+
+test(exec_state_rejects_count_nul_mismatch)
+{
+	uint8_t buf[4096];
+	size_t n = small_state(buf, sizeof buf);
+	test_true(n > 0);
+	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)buf;
+	tawcroot_exec_state out;
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), 0);
+
+	h->argc = 3;      /* region holds 2 strings */
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), -22);
+	h->argc = 1;
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), -22);
+	h->argc = 2;
+	h->envc = 0;      /* non-empty region, zero count */
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), -22);
+}
+
+test(exec_state_rejects_unterminated_region)
+{
+	uint8_t buf[4096];
+	size_t n = small_state(buf, sizeof buf);
+	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)buf;
+	tawcroot_exec_state out;
+	/* Chop the argv region's final NUL off: "p\0q" — count matches
+	 * NULs only if the reader also checks termination. */
+	h->argv_bytes -= 1;
+	h->argc = 1;
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), -22);
+}
+
+test(exec_state_rejects_region_out_of_bounds)
+{
+	uint8_t buf[4096];
+	size_t n = small_state(buf, sizeof buf);
+	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)buf;
+	tawcroot_exec_state out;
+	uint32_t saved = h->envp_off;
+	h->envp_off = h->string_bytes;           /* starts at the end */
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), -22);
+	h->envp_off = saved;
+	h->envp_bytes = 0xfffffff0u;             /* overflows */
+	test_int_eq((int)tawcroot_exec_state_read(buf, n, &out), -22);
 }

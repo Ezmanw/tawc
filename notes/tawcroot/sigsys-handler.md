@@ -558,7 +558,9 @@ over 1 KiB is a build error. The rules, also stated in
   = 4); before the 2026-08 fix its ~2 KiB per-level frame times five
   levels could alone approach a small guest stack.
 - Larger staging serialized by a lock goes in statics — the exec path
-  stages through exec_lock-guarded static buffers (`exec_handler.c`).
+  stages through exec_lock-guarded statics (`exec_handler.c`'s guest
+  readers, bind/shm export buffers); guest-sized data (argv/envp) goes
+  straight into the state memfd mapping, never the frame or BSS.
 - Init and `--exec-child` bootstrap code that provably never runs on a
   guest stack (supervisor init, filter install, the loader below the
   jump) opts out per file/region with `TAWCROOT_FRAME_CAP_EXEMPT`.

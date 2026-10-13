@@ -138,12 +138,13 @@ rule is a short-lived `exec_state_fd`, created by the `execve`
 handler immediately before re-execing tawcroot. It is passed as the
 positional argv slot after `--exec-child` (i.e. `argv[2]`,
 formatted as a decimal integer), intentionally *without*
-`FD_CLOEXEC` for that one host exec. `argv[0]` of that re-exec is
-not "tawcroot" but the serialized proctitle (space-joined guest
-cmdline plus shebang slack): it sizes the kernel arg region so the
-loader can overwrite it in place with the real NUL-joined guest argv
-right before the jump, making `/proc/<pid>/cmdline` (and, via
-`PR_SET_NAME`, `comm`) kernel-truthful for every guest process — see
+`FD_CLOEXEC` for that one host exec. The re-exec's argv is
+`[t0, "--exec-child", "<fd>", t1, t2, ...]`: the title strings `tN`
+(placeholder text, each at most `MAX_ARG_STRLEN`) size the kernel arg
+region to exactly the post-shebang NUL-joined guest argv, so the
+loader can overwrite it in place right before the jump, making
+`/proc/<pid>/cmdline` (and, via `PR_SET_NAME`, `comm`)
+kernel-truthful for every guest process at any length — see
 `include/proctitle.h`. Entry classification only reads
 `argv[1]`/`argv[2]`. `--exec-child` reads it through
 `tawcroot_raw_syscall()`, reconstructs process state, then closes it
@@ -151,7 +152,12 @@ before manually jumping to guest code. The fd is never visible to the
 guest.
 
 State format is versioned and length-prefixed binary, not ad-hoc
-string parsing. It contains:
+string parsing (`include/exec_state.h`): a small fixed header, then a
+string pool of the path, the argv strings back to back, the envp
+strings back to back, and the extras. argv/envp are stored as regions
+(offset, byte length, count) rather than per-string offsets, so
+nothing caps argc/envc; readers rebuild pointers by walking the NULs.
+It contains:
 
 - rootfs host path;
 - bind specs (`src` host path, `dst` guest path), in original order;

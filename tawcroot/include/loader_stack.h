@@ -129,6 +129,10 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
                              const struct tawc_loader_stack_input *in,
                              struct tawc_loader_stack_out *out);
 
+/* Upper bound on the bytes tawc_loader_build_stack writes for `in`
+ * (strings, vectors, auxv, alignment). */
+size_t tawc_loader_stack_bytes(const struct tawc_loader_stack_input *in);
+
 /* Walk a synthesized stack at `sp` and pull out argc/argv/envp/auxv
  * pointers, the way glibc's _start does. Used by the unit tests as
  * an oracle: we build a stack, walk it back, and compare against the

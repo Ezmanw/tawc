@@ -333,6 +333,12 @@ $(OUT)/programs/dynamic_legacy_nr_probe: $(SRC_TS)/integration/programs/dynamic_
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -Wl,--build-id=none $< -o $@
 
+# dynamic_exec_limits: execve experiments around the kernel's argv/envp
+# limits; test_exec_limits.c diffs its native and tawcroot output.
+$(OUT)/programs/dynamic_exec_limits: $(SRC_TS)/integration/programs/dynamic_exec_limits.c | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Wl,--build-id=none $< -o $@
+
 # static_execve_exit42: a static fixture that issues execve("/bin/static_exit42")
 # from inside its own _start. Used by the phase 2g multi-process smoke
 # (test_prod_rootfs.c::prod_rootfs_guest_does_execve) — the handler

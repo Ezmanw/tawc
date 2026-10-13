@@ -27,11 +27,29 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 long tawc_copy_string_from_guest(char *dst, size_t cap,
 				 const char *guest_src);
 long tawc_copy_from_guest(void *dst, size_t n, const void *guest_src);
 long tawc_copy_to_guest(void *guest_dst, const void *src, size_t n);
+
+/* Page-cached guest reader for bulk copies (exec argv/envp walks):
+ * reads a whole 4 KiB page per process_vm_readv and serves later reads
+ * that land in the same page from the cache, so a long argv packed
+ * into a few pages costs a few syscalls instead of one per string.
+ * Caller owns the struct; zero `len` (or zero-init) to reset. Same
+ * return contract as the copy helpers above. */
+#define TAWC_GUEST_PAGE 4096
+struct tawc_guest_reader {
+	uintptr_t     base;
+	size_t        len;
+	unsigned char page[TAWC_GUEST_PAGE];
+};
+long tawc_guest_read(struct tawc_guest_reader *r, void *dst, size_t n,
+		     const void *guest_src);
+long tawc_guest_read_string(struct tawc_guest_reader *r, char *dst,
+			    size_t cap, const char *guest_src);
 
 /* Init: probe process_vm_readv against our own task id; sets a static flag
  * tawc_usercopy_works. Call once at startup before installing the

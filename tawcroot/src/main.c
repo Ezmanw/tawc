@@ -568,7 +568,6 @@ void tawcroot_main(int argc, char **argv)
 			}
 			long rc = tawcroot_exec_handler_perform(
 				exec_path,
-				argc - pi,
 				(const char *const *)(argv + pi),
 				(const char *const *)derive_envp(argc, argv));
 			tawc_io_str("tawcroot: --exec-via-handler: handler returned ");

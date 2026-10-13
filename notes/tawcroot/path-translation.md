@@ -733,22 +733,32 @@ so total wall-cost is higher than a native exec but avoids a second
 host exec into ld.so. The big win is that the handler stays live with
 no signal-restoration trickery.
 
-**Argv/envp limits and the point of no return.** The exec_state
-collection caps (`TAWCROOT_EXEC_STATE_MAX_ARGS` 4096 args /
-`TAWCROOT_EXEC_STATE_MAX_ENV` 1024 envs / 64 KiB packed strings —
-`include/exec_state.h`) are checked *before* the `execveat` commit,
-so an oversized exec returns a real `-E2BIG` to the caller. Every
-stage after the commit (the loader's effective-argv array, the stack
-synthesizer) must accept at least what collection admitted *plus*
-up to `TAWC_SHEBANG_MAX_DEPTH * 2` shebang-prepended entries —
-`TAWC_EXEC_EFF_ARGV_MAX` in `include/loader_exec.h`. A smaller cap
-in any post-commit stage doesn't produce an errno; it destroys the
-already-committed process with a bare loader exit code and no
-stderr. This bit twice (loader_stack at 1024, loader_exec's
-eff_argv at ~264 — `cat *` over a few hundred files silently
-no-op'd); regression tests in `test_exec_via_handler.c`
-(`*_args_roundtrip`, `past_max_args_e2big_precommit`) and
-`test_loader_stack.c` pin the lockstep.
+**Argv/envp limits and the point of no return.** Guest exec limits
+are the kernel's (`fs/exec.c`), with no tawcroot-specific caps: each
+argv/envp string up to `MAX_ARG_STRLEN` (32 pages, NUL included), and
+`(max(argc,1) + envc) * 8` bytes of pointers plus every string (exec
+path, envp, argv) within `max(min(6 MiB, RLIMIT_STACK / 4), 128 KiB)`,
+with `RLIMIT_STACK` read via `prlimit64` on every exec (so guest
+`ulimit -s` behaves as on Linux). The shebang rewrite (drop argv[0],
+add script path, interpreter, optional arg) is re-checked against the
+same budget. Errno order matches the kernel: file lookup/permission
+errors, then `E2BIG`/`EFAULT`, then `ENOEXEC`/interpreter errors.
+All of it runs *before* the `execveat` commit, so the caller gets a
+real errno; the re-exec into self needs about the same kernel budget
+(the title pieces replace argv, see below), so it fits whenever the
+pre-check passed, and a borderline mismatch surfaces as a clean
+`E2BIG` from `commit()`. Every post-commit stage (exec-child pointer
+arrays, the loader's effective argv, the stack synthesizer, the
+proctitle bounce) is sized from the actual argc/byte counts — a fixed
+cap there doesn't produce an errno, it destroys the already-committed
+process with a bare loader exit code (this bit twice when caps
+existed). `prepare()` collects strings straight into the state memfd's
+`MAP_SHARED` mapping, growing it with `ftruncate` + `mremap` from
+64 KiB, and hands the mapping to `commit()`. Guest reads go through a
+page-cached reader (`usercopy.h`), one `process_vm_readv` per 4 KiB
+page. `test_exec_limits.c` diffs a native run of
+`programs/dynamic_exec_limits.c` against a `tawcroot -r /` run at both
+sides of every limit.
 
 This is conceptually what proot's loader does, modulo proot ships
 a separate `libproot-loader.so` for ptrace-land reasons. We have

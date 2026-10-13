@@ -30,15 +30,6 @@ extern "C" {
 #define TAWC_SHEBANG_MAX_DEPTH 4
 #define TAWC_SHEBANG_BUF       256
 
-/* Max effective argc the loader can produce: everything the exec_state
- * collection layer accepts, plus up to 2 prepended entries (interpreter
- * + optional shebang arg) per shebang level. Post-collection stages
- * (eff_argv here, the stack synthesizer) MUST size to this: by the
- * time they run the execveat commit has destroyed the caller, so any
- * lower cap kills the process instead of returning E2BIG. */
-#define TAWC_EXEC_EFF_ARGV_MAX \
-	(TAWCROOT_EXEC_STATE_MAX_ARGS + TAWC_SHEBANG_MAX_DEPTH * 2)
-
 /* Read and tokenize the "#!" line of `fd` (caller has already checked
  * the magic). `line` (capacity `cap`, typically TAWC_SHEBANG_BUF) holds
  * the tokens; on success *interp points at the interpreter path and
@@ -70,6 +61,9 @@ void tawcroot_loader_set_host_auxv(uint64_t hwcap, uint64_t hwcap2,
                                    uint64_t clktck, uint64_t flags,
                                    uint64_t page_size);
 
+/* AT_PAGESZ as stashed above (4096 until then). */
+size_t tawcroot_host_page_size(void);
+
 /* Arguments to forward to the guest as argv/envp. Passed directly to
  * the stack synthesizer.  `argv[argc]` must be NULL; `envp` must be
  * NULL-terminated. */
@@ -99,7 +93,7 @@ struct tawc_loader_exec_args {
  *   72   stack synth failed
  *   73   no usable AT_PHDR address (no PT_PHDR, phdrs outside the
  *        first PT_LOAD)
- *   74   too many guest args for the effective-argv array
+ *   74   effective-argv array allocation failed
  *   75   shebang resolve failed (depth limit, unreadable interpreter,
  *        malformed #! line)
  *
@@ -119,6 +113,7 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args);
  *   80   state_fd size lookup (lseek) failed or state too small
  *   81   mmap of state_fd failed
  *   82   exec_state header invalid (magic / version / sizes)
+ *   83   argv/envp pointer array allocation failed
  */
 __attribute__((noreturn))
 void tawcroot_loader_exec_child(int state_fd, const char *platform);

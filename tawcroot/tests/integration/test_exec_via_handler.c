@@ -273,7 +273,7 @@ test(exec_via_handler_shebang_cmdline_has_interpreter)
 	 * [interp, script-path, ...] and comm is the SCRIPT's basename
 	 * (truncated to 15 chars, TASK_COMM_LEN), not the interpreter's.
 	 * The exec handler reserves arg-region space for the interpreter
-	 * prepend via classify_loadable's title_extra. */
+	 * prepend via cmdline_bytes (classify_loadable's shebang accounting). */
 	const char *p = make_exec_file("title",
 		"#!/bin/sh\n"
 		"[ \"$(cat /proc/$$/comm)\" = tawcroot-classi ] || exit 7\n"
@@ -327,17 +327,16 @@ test(exec_via_handler_shebang_300_args_roundtrip)
 	(void)unlink(p);
 }
 
-test(exec_via_handler_collection_max_args_roundtrip)
+test(exec_via_handler_100k_args_roundtrip)
 {
-	/* The exact lockstep bound: TAWCROOT_EXEC_STATE_MAX_ARGS total
-	 * argv entries — the most the collection layer admits — must make
-	 * it through the loader and stack synth. */
-	enum { TOTAL = TAWCROOT_EXEC_STATE_MAX_ARGS };
-	enum { NA = TOTAL - 4 };   /* minus sh, -c, script, $0 */
+	/* No tawcroot-side argc cap: the old 4096-entry exec_state limit
+	 * is gone, so anything the kernel let reach us must survive the
+	 * dance (test_exec_limits.c covers the kernel-exact edges). */
+	enum { NA = 100000 };
 	static char script[48];
 	snprintf(script, sizeof script,
 	         "[ \"$#\" = %d ] && exit 42; exit 8", (int)NA);
-	static const char *args[TOTAL + 2];
+	static const char *args[NA + 6];
 	int n = 0;
 	args[n++] = "--exec-via-handler";
 	args[n++] = "/bin/sh";
@@ -347,21 +346,6 @@ test(exec_via_handler_collection_max_args_roundtrip)
 	for (int i = 0; i < NA; i++) args[n++] = "a";
 	args[n] = NULL;
 	test_int_eq(run(args), 42);
-}
-
-test(exec_via_handler_past_max_args_e2big_precommit)
-{
-	/* One past the collection cap must fail BEFORE the execveat
-	 * commit — perform() returns -E2BIG (the guest's execve errno)
-	 * and testhost exits 50 — never a post-commit loader death. */
-	enum { TOTAL = TAWCROOT_EXEC_STATE_MAX_ARGS + 1 };
-	static const char *args[TOTAL + 2];
-	int n = 0;
-	args[n++] = "--exec-via-handler";
-	args[n++] = "/bin/true";
-	for (int i = 1; i < TOTAL; i++) args[n++] = "a";
-	args[n] = NULL;
-	test_int_eq(run(args), 50);
 }
 
 test(exec_via_handler_shebang_missing_interp_returns_50)

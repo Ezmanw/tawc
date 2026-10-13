@@ -5,6 +5,7 @@
 #include <sys/uio.h>
 
 #include "errno_neg.h"
+#include "tawc_string.h"
 #include "usercopy.h"
 #include "raw_sys.h"
 #include "sysnr.h"
@@ -62,34 +63,96 @@ static long readv_guest(void *dst, size_t len, const void *src)
 	return rv;
 }
 
+/* Bytes from `p` to the end of its 4 KiB page. A readable byte means a
+ * readable page (also on 16 KiB-page kernels, whose pages are whole
+ * multiples of this), so reads bounded this way never fail part-way. */
+static size_t to_page_end(const void *p)
+{
+	return TAWC_GUEST_PAGE - ((uintptr_t)p & (TAWC_GUEST_PAGE - 1));
+}
+
 long tawc_copy_string_from_guest(char *dst, size_t cap,
 				 const char *guest_src)
 {
 	if (!dst || cap == 0) return TAWC_EFAULT;
 	if (!guest_src) return TAWC_EFAULT;
 
-	/* Read in chunks, scanning for NUL. Chunk size is a compromise
-	 * between syscall overhead and over-reading near a page boundary
-	 * (which can EFAULT past a valid string that ends mid-page). The
-	 * kernel handles partial reads cleanly: process_vm_readv returns
-	 * the number of bytes that actually copied. */
+	/* One read per page: over-reading past the NUL within the same
+	 * page is safe, crossing into the next page is not. */
 	size_t off = 0;
 	while (off < cap) {
 		size_t want = cap - off;
-		if (want > 256) want = 256;
+		size_t page = to_page_end(guest_src + off);
+		if (want > page) want = page;
 		long got = readv_guest(dst + off, want, guest_src + off);
-		if (got < 0) return TAWC_EFAULT;
-		if (got == 0) return TAWC_EFAULT;
+		if (got <= 0) return TAWC_EFAULT;
 		for (long i = 0; i < got; i++) {
 			if (dst[off + i] == 0) {
 				return (long)(off + i);  /* len excl NUL */
 			}
 		}
 		off += (size_t)got;
-		if ((size_t)got < want) {
-			/* Partial read suggests a page boundary truncation;
-			 * try again from the new offset. */
+	}
+	return TAWC_ENAMETOOLONG;
+}
+
+/* Point the cache at the page holding `p`. */
+static long reader_fill(struct tawc_guest_reader *r, const void *p)
+{
+	uintptr_t base = (uintptr_t)p & ~(uintptr_t)(TAWC_GUEST_PAGE - 1);
+	r->len = 0;
+	long got = readv_guest(r->page, TAWC_GUEST_PAGE, (const void *)base);
+	if (got <= 0) return TAWC_EFAULT;
+	r->base = base;
+	r->len  = (size_t)got;
+	return 0;
+}
+
+/* Cached bytes available at `p` (0 = miss). */
+static size_t reader_avail(const struct tawc_guest_reader *r, uintptr_t p)
+{
+	if (p < r->base || p - r->base >= r->len) return 0;
+	return r->len - (p - r->base);
+}
+
+long tawc_guest_read(struct tawc_guest_reader *r, void *dst, size_t n,
+		     const void *guest_src)
+{
+	if (!guest_src) return TAWC_EFAULT;
+	unsigned char *d = (unsigned char *)dst;
+	uintptr_t p = (uintptr_t)guest_src;
+	while (n > 0) {
+		size_t av = reader_avail(r, p);
+		if (av == 0) {
+			if (reader_fill(r, (const void *)p) < 0) return TAWC_EFAULT;
+			av = reader_avail(r, p);
 		}
+		if (av > n) av = n;
+		memcpy(d, r->page + (p - r->base), av);
+		d += av; p += av; n -= av;
+	}
+	return 0;
+}
+
+long tawc_guest_read_string(struct tawc_guest_reader *r, char *dst,
+			    size_t cap, const char *guest_src)
+{
+	if (!guest_src) return TAWC_EFAULT;
+	uintptr_t p = (uintptr_t)guest_src;
+	size_t off = 0;
+	while (off < cap) {
+		size_t av = reader_avail(r, p);
+		if (av == 0) {
+			if (reader_fill(r, (const void *)p) < 0) return TAWC_EFAULT;
+			av = reader_avail(r, p);
+		}
+		if (av > cap - off) av = cap - off;
+		const unsigned char *src = r->page + (p - r->base);
+		for (size_t i = 0; i < av; i++) {
+			dst[off + i] = (char)src[i];
+			if (src[i] == 0) return (long)(off + i);
+		}
+		off += av; p += av;
 	}
 	return TAWC_ENAMETOOLONG;
 }

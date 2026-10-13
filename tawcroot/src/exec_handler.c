@@ -19,24 +19,34 @@
 #include "raw_sys.h"
 #include "shm.h"
 #include "tawc_uapi.h"
+#include "usercopy.h"
 
 
-/* Proctitle staging buffer: path (16 KB) + space-joined argv (64 KB) +
- * shebang-expansion slack. Matches proctitle.c's bounce sizing. */
-#define EXEC_TITLE_BUF_SIZE  ((16 + 64 + 4) * 1024)
+#define MiB (1024u * 1024u)
+/* include/uapi/linux/limits.h ARG_MAX: the budget floor. */
+#define KERNEL_ARG_MAX   (128u * 1024u)
+#define RLIMIT_STACK_RES 3
+#define MREMAP_MAYMOVE   1
+#define MAP_SHARED_      0x01
+/* First size of the state mapping; it doubles on demand. */
+#define STATE_INITIAL    (64u * 1024u)
 
-/* Cap on serialized exec_state size we'll write into a memfd. Sized to
- * hold the full header (offset arrays for MAX_ARGS args + MAX_ENV envs)
- * plus everything the collection layer (syscalls_exec.c) accepts: 16 KB
- * path + 64 KB argv + 256 KB envp, with slack, plus the proctitle
- * string. Previously this was 64 KB
- * total, so any argv+envp over ~61 KB made the write -ENOSPC, which the
- * guest saw as a nonsensical execve()==ENOSPC for exactly the busy
- * environments the collection layer was sized for. BSS, not stack. */
-#define EXEC_STATE_BUF_SIZE                                            \
-	(sizeof(tawcroot_exec_state_header) +                         \
-	 (16 * 1024) + (64 * 1024) + (256 * 1024) +                    \
-	 EXEC_TITLE_BUF_SIZE + 8192)
+/* MAX_ARG_STRLEN: 32 pages, NUL included. */
+static size_t max_arg_strlen(void)
+{
+	return 32 * tawcroot_host_page_size();
+}
+
+/* fs/exec.c bprm_stack_limits: the argv+envp budget, read fresh from
+ * RLIMIT_STACK on every exec (tawcroot passes it straight through). */
+static size_t arg_budget(void)
+{
+	struct { unsigned long long cur, max; } rl;
+	size_t limit = 6 * MiB;   /* _STK_LIM / 4 * 3 */
+	if (tawc_getrlimit64(RLIMIT_STACK_RES, &rl) == 0 && rl.cur / 4 < limit)
+		limit = (size_t)(rl.cur / 4);
+	return limit < KERNEL_ARG_MAX ? KERNEL_ARG_MAX : limit;
+}
 
 /* Validate an exec-probe fd the way execve(2) would validate the file:
  * directories are EISDIR, non-regular files and files with no execute
@@ -84,6 +94,17 @@ static long classify_elf(int fd)
 	return 0;
 }
 
+/* Shebang accounting for classify_loadable. binfmt_script drops
+ * argv[0] and adds the script path, the interpreter and its optional
+ * argument; the kernel charges those against the same budget as the
+ * caller's strings, so a near-limit script exec is E2BIG. */
+struct shebang_acct {
+	size_t extra;       /* interpreter + arg bytes added, all levels */
+	size_t argv0_bytes; /* caller's argv[0] incl. NUL ("" if argc 0) */
+	size_t path_bytes;  /* exec path incl. NUL */
+	size_t left;        /* budget remaining after the caller's strings */
+};
+
 /* Classify whether the open file is something the loader can actually
  * run, BEFORE the execveat commit point. Without this, problems the
  * loader only discovers post-commit (a `chmod +x`'d text file, a
@@ -95,12 +116,8 @@ static long classify_elf(int fd)
  * Note: a narrow TOCTOU window remains (the file could be replaced
  * between this probe and the child's open), same as for the existing
  * executable-bit probe — but that window is far narrower than the
- * always-dies-post-commit behaviour it replaces.
- *
- * `title_extra` accumulates the bytes the loader's shebang resolution
- * will PREPEND to argv (interpreter path + optional shebang arg, per
- * level), so the proctitle can reserve arg-region space for them. */
-static long classify_loadable(int fd, int depth, size_t *title_extra)
+ * always-dies-post-commit behaviour it replaces. */
+static long classify_loadable(int fd, int depth, struct shebang_acct *a)
 {
 	if (depth > TAWC_SHEBANG_MAX_DEPTH) return TAWC_ELOOP;
 
@@ -110,29 +127,123 @@ static long classify_loadable(int fd, int depth, size_t *title_extra)
 	if (n < 2 || !(magic[0] == '#' && magic[1] == '!'))
 		return classify_elf(fd);
 
-	/* Shebang: parse the line, open the interpreter through the view,
-	 * require it executable, and recurse. */
+	/* Shebang: parse the line, charge the rewrite against the budget,
+	 * open the interpreter through the view, require it executable,
+	 * and recurse. Same order as binfmt_script. */
 	char line[TAWC_SHEBANG_BUF];
 	const char *interp;
 	const char *sarg;
 	long pe = tawcroot_shebang_read(fd, line, sizeof line, &interp, &sarg);
 	if (pe < 0) return pe;
-	*title_extra += tawc_strlen(interp) + 1;
-	if (sarg) *title_extra += tawc_strlen(sarg) + 1;
+	size_t add = tawc_strlen(interp) + 1 + (sarg ? tawc_strlen(sarg) + 1 : 0);
+	/* Level 0 swaps argv[0] for the path; deeper levels swap the
+	 * previous interpreter for itself. */
+	if (depth == 0) {
+		a->left += a->argv0_bytes;
+		if (a->left < a->path_bytes) return TAWC_E2BIG;
+		a->left -= a->path_bytes;
+	}
+	if (a->left < add) return TAWC_E2BIG;
+	a->left  -= add;
+	a->extra += add;
 
 	long ifd = tawcroot_open_in_view(interp);
 	if (ifd < 0) return ifd;  /* missing interpreter → ENOENT, etc. */
 	long ck = probe_check_executable((int)ifd);
-	if (ck == 0) ck = classify_loadable((int)ifd, depth + 1, title_extra);
+	if (ck == 0) ck = classify_loadable((int)ifd, depth + 1, a);
 	tawc_close((int)ifd);
 	return ck;
 }
 
-long tawcroot_exec_handler_prepare(const char *path, int argc,
-                                   const char *const *argv,
-                                   const char *const *envp)
+/* The growing state memfd + its MAP_SHARED mapping. */
+struct collect {
+	int      fd;
+	uint8_t *base;
+	size_t   cap;
+	size_t   len;
+	size_t   soft_max;   /* doubling stops here; exact growth after */
+};
+
+static long collect_grow(struct collect *c, size_t need)
 {
-	if (!path || !argv || !envp || argc < 0) return TAWC_EINVAL;
+	if (need <= c->cap) return 0;
+	size_t nc = c->cap;
+	while (nc < need) nc *= 2;
+	if (nc > c->soft_max) nc = need > c->soft_max ? need : c->soft_max;
+	nc = (nc + 4095) & ~(size_t)4095;
+	long r = tawc_ftruncate(c->fd, (long)nc);
+	if (r < 0) return r;
+	long m = tawc_mremap(c->base, c->cap, nc, MREMAP_MAYMOVE);
+	if (tawc_loader_mmap_is_err((uintptr_t)m)) return m;
+	c->base = (uint8_t *)(uintptr_t)m;
+	c->cap  = nc;
+	return 0;
+}
+
+/* Guest-memory readers for the argv/envp walk: one for the pointer
+ * arrays, one for the strings, so the two walks don't evict each
+ * other's page. Static (4 KiB each, over the handler frame cap);
+ * callers hold exec_lock. */
+static struct tawc_guest_reader g_ptr_reader;
+static struct tawc_guest_reader g_str_reader;
+
+/* Count a guest pointer array (NULL = empty). Stops with -E2BIG past
+ * `max` entries — the pointers alone would already blow the budget. */
+static long count_array(const char *const *arr, size_t max, size_t *out)
+{
+	size_t n = 0;
+	if (arr) {
+		for (;;) {
+			uintptr_t p;
+			if (tawc_guest_read(&g_ptr_reader, &p, sizeof p, &arr[n]) < 0)
+				return TAWC_EFAULT;
+			if (!p) break;
+			if (++n > max) return TAWC_E2BIG;
+		}
+	}
+	*out = n;
+	return 0;
+}
+
+/* Copy n guest strings from `arr` to the end of the state, charging
+ * each (NUL included) against *left. */
+static long collect_strings(struct collect *c, const char *const *arr,
+                            size_t n, size_t *left)
+{
+	size_t smax = max_arg_strlen();
+	for (size_t i = 0; i < n; i++) {
+		uintptr_t p;
+		if (tawc_guest_read(&g_ptr_reader, &p, sizeof p, &arr[i]) < 0)
+			return TAWC_EFAULT;
+		/* NULL here means the guest rewrote its array mid-exec. */
+		if (!p) return TAWC_EFAULT;
+		size_t lim = smax < *left ? smax : *left;
+		for (;;) {
+			size_t room = c->cap - c->len;
+			size_t cap = room < lim ? room : lim;
+			long sn = tawc_guest_read_string(&g_str_reader,
+			                                 (char *)c->base + c->len,
+			                                 cap, (const char *)p);
+			if (sn >= 0) {
+				c->len += (size_t)sn + 1;
+				*left  -= (size_t)sn + 1;
+				break;
+			}
+			if (sn != TAWC_ENAMETOOLONG) return sn;
+			if (cap == lim) return TAWC_E2BIG;
+			long g = collect_grow(c, c->cap + 1);
+			if (g < 0) return g;
+		}
+	}
+	return 0;
+}
+
+long tawcroot_exec_handler_prepare(const char *path,
+                                   const char *const *argv,
+                                   const char *const *envp,
+                                   struct tawcroot_exec_prep *prep)
+{
+	if (!path || !prep) return TAWC_EINVAL;
 
 	/* execve("/proc/self/exe", …): the kernel-level link points at
 	 * libtawcroot.so, which the loader would then try to map over the
@@ -144,32 +255,83 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 	if (tawcroot_guest_exe_path_len > 0 && tawcroot_is_proc_self_exe(path))
 		path = tawcroot_guest_exe_path;
 
-	/* (1) Probe the guest binary so failures surface as a clean -errno
-	 * to the guest rather than a phantom-process exit later. In rootfs
-	 * mode (tawcroot_rootfs_fd set) the path is guest-relative; route
-	 * the probe through the translator so we open inside the view.
-	 * In legacy --exec-via-handler mode (no rootfs) the path is a
-	 * host-fs path, opened directly. */
-	size_t title_extra = 0;
-	{
-		long probe = tawcroot_open_in_view(path);
-		if (probe < 0) return probe;
-		long ck = probe_check_executable((int)probe);
-		/* Classify the binary (ELF / shebang chain) before the commit
-		 * so a non-ELF non-script, a missing shebang interpreter, or a
-		 * wrong-arch ELF returns a clean errno to the guest instead of
-		 * killing it with a loader exit code post-execveat. */
-		if (ck == 0) ck = classify_loadable((int)probe, 0, &title_extra);
+	/* (1) Open + probe the file first: like the kernel, lookup and
+	 * permission errors win over E2BIG. In rootfs mode the path is
+	 * guest-relative and the open goes through the view; in legacy
+	 * --exec-via-handler mode it is a host path. */
+	long probe = tawcroot_open_in_view(path);
+	if (probe < 0) return probe;
+	long r = probe_check_executable((int)probe);
+	if (r < 0) { tawc_close((int)probe); return r; }
+
+	/* (2) Count, then check the pointer budget (bprm_stack_limits). */
+	g_ptr_reader.len = 0;
+	g_str_reader.len = 0;
+	size_t limit = arg_budget();
+	size_t argc = 0, envc = 0;
+	r = count_array(argv, limit / sizeof(void *), &argc);
+	if (r == 0) r = count_array(envp, limit / sizeof(void *), &envc);
+	if (r < 0) { tawc_close((int)probe); return r; }
+	size_t ptrs = ((argc ? argc : 1) + envc) * sizeof(void *);
+	size_t path_bytes = tawc_strlen(path) + 1;
+	/* Strings budget: the exec filename and, for argc == 0, the ""
+	 * the kernel substitutes as argv[0] are charged too. */
+	size_t charged = path_bytes + (argc ? 0 : 1);
+	if (limit <= ptrs || limit - ptrs < charged) {
 		tawc_close((int)probe);
-		if (ck < 0) return ck;
+		return TAWC_E2BIG;
 	}
+	size_t left = limit - ptrs - charged;
 
-	/* (2) Create a non-CLOEXEC memfd. !CLOEXEC is required so the fd
-	 * survives the upcoming execveat into our own re-exec. */
+	/* (3) Collect into a non-CLOEXEC memfd (it must survive the
+	 * execveat into our own re-exec), growing it on demand so a small
+	 * exec never maps megabytes. */
+	struct collect c = { .fd = -1 };
 	long mfd = tawc_memfd_create("tawcroot-exec-state", 0);
-	if (mfd < 0) return TAWC_EFAULT;
+	if (mfd < 0) { tawc_close((int)probe); return mfd; }
+	c.fd = (int)mfd;
+	c.soft_max = sizeof(tawcroot_exec_state_header) + limit + 64 * 1024;
+	r = tawc_ftruncate(c.fd, STATE_INITIAL);
+	if (r == 0) {
+		long m = tawc_mmap((void *)0, STATE_INITIAL,
+		                   TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE,
+		                   MAP_SHARED_, c.fd, 0);
+		if (tawc_loader_mmap_is_err((uintptr_t)m)) r = m;
+		else { c.base = (uint8_t *)(uintptr_t)m; c.cap = STATE_INITIAL; }
+	}
+	/* 64 KiB always holds the header + a path (≤ 16 KiB). */
+	if (r == 0) r = tawcroot_exec_state_begin(c.base, c.cap, &c.len, path);
+	size_t argv_off = c.len;
+	if (r == 0) r = collect_strings(&c, argv, argc, &left);
+	size_t argv_bytes = c.len - argv_off;
+	if (r == 0) r = collect_strings(&c, envp, envc, &left);
+	size_t envp_bytes = c.len - argv_off - argv_bytes;
 
-	/* (3) Build the exec_state. When tawcroot has a rootfs view set
+	/* (4) Binary format, after the size checks like the kernel's
+	 * search_binary_handler: ENOEXEC, shebang interpreter errors, and
+	 * E2BIG for a rewrite that no longer fits. */
+	struct shebang_acct sa = {
+		.argv0_bytes = 1,
+		.path_bytes  = path_bytes,
+		.left        = left,
+	};
+	if (r == 0) {
+		if (argc)
+			sa.argv0_bytes = tawc_strlen((const char *)c.base +
+			                             argv_off) + 1;
+		r = classify_loadable((int)probe, 0, &sa);
+	}
+	tawc_close((int)probe);
+
+	/* cmdline_bytes: the NUL-joined argv the loader will install, which
+	 * commit() sizes the re-exec's arg region to (proctitle.h):
+	 *   shebang:     interp/arg prepends + path + argv[1..]
+	 *   non-shebang: argv[0] + argv[1..]  ("" when argc == 0) */
+	size_t cmdline = (argc ? argv_bytes : 1);
+	if (sa.extra > 0)
+		cmdline = cmdline - sa.argv0_bytes + path_bytes + sa.extra;
+
+	/* (5) Extras. When tawcroot has a rootfs view set
 	 * up (production -r mode), capture rootfs path + bind specs +
 	 * guest_exe so --exec-child can re-establish the view in the new
 	 * tawcroot incarnation. Without these, the new process would run
@@ -273,213 +435,151 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 		extras.shm_fd   = shm_fd_arr;
 	}
 
-	/* Proctitle: sizes the re-exec'd process's kernel arg region so
-	 * proctitle.c's in-place rewrite fits the final cmdline EXACTLY.
-	 * The loader installs (post-shebang) eff_argv, whose NUL-joined
-	 * byte count is:
-	 *   shebang:     interp/arg prepends (title_extra) + path +
-	 *                argv[1..]  (binfmt_script drops caller argv[0])
-	 *   non-shebang: argv[0] + argv[1..]  ("" when argc == 0)
-	 * The execveat argv also carries "--exec-child <fd>", so the title
-	 * is shrunk by that protocol overhead; the region then comes out
-	 * at exactly the target size and the rewrite leaves no trailing
-	 * NUL slack (matters to pkill -fx and anything reading cmdline
-	 * byte-exactly). Cmdlines shorter than the overhead keep a few
-	 * trailing NULs — nothing to shrink below the protocol args.
-	 * Only the LENGTH matters; the content (space-joined guest argv,
-	 * truncated or space-padded to length) is visible only in the µs
-	 * between the execveat and the loader's rewrite, or if the loader
-	 * dies mid-bootstrap. Static: caller holds exec_lock
-	 * (thread-safety note in exec_handler.h). */
-	static char title_buf[EXEC_TITLE_BUF_SIZE];
-	{
-		char fdtmp[24];
-		int fdlen = tawc_int_to_str(fdtmp, sizeof fdtmp, (int)mfd);
-		if (fdlen <= 0) fdlen = 1;
-		size_t overhead = sizeof "--exec-child" + (size_t)fdlen + 1;
-
-		size_t want = 0;   /* exact NUL-joined eff_argv byte count */
-		for (int i = 1; i < argc && argv[i]; i++)
-			want += tawc_strlen(argv[i]) + 1;
-		if (title_extra > 0)
-			want += title_extra + tawc_strlen(path) + 1;
-		else
-			want += (argc > 0 ? tawc_strlen(argv[0]) : 0) + 1;
-
-		size_t tlen = want > overhead + 1 ? want - 1 - overhead : 0;
-		if (tlen > sizeof title_buf - 1) tlen = sizeof title_buf - 1;
-
-		size_t pos = 0;
-		for (int i = 0; i < argc && argv[i] && pos < tlen; i++) {
-			if (i > 0) title_buf[pos++] = ' ';
-			const char *s = argv[i];
-			while (*s && pos < tlen) title_buf[pos++] = *s++;
-		}
-		while (pos < tlen) title_buf[pos++] = ' ';
-		title_buf[pos] = 0;
-		extras.proctitle = title_buf;
+	if (r == 0) {
+		tawcroot_exec_state_set_args(c.base, argv_off, (uint32_t)argc,
+		                             argv_bytes, (uint32_t)envc,
+		                             envp_bytes, (uint32_t)cmdline);
+		r = collect_grow(&c, c.len +
+		                 tawcroot_exec_state_extras_bytes(&extras));
 	}
-
-	static uint8_t state_buf[EXEC_STATE_BUF_SIZE];
-	long w = tawcroot_exec_state_write(state_buf, sizeof state_buf,
-	                                   path, argc, argv, envp, &extras);
-	if (w < 0) { tawc_close((int)mfd); return w; }
-
-	long bytes = 0;
-	while (bytes < w) {
-		long r = tawc_write((int)mfd, state_buf + bytes,
-		                    (size_t)(w - bytes));
-		if (r < 0) { tawc_close((int)mfd); return r; }
-		if (r == 0) { tawc_close((int)mfd); return TAWC_EFAULT; }
-		bytes += r;
+	if (r == 0) r = tawcroot_exec_state_finish(c.base, c.cap, &c.len,
+	                                           &extras);
+	/* Trim the memfd to the state; the child sizes it with lseek. */
+	if (r == 0) r = tawc_ftruncate(c.fd, (long)c.len);
+	if (r < 0) {
+		if (c.base) (void)tawc_munmap(c.base, c.cap);
+		tawc_close(c.fd);
+		return r;
 	}
-
-	/* Rewind the memfd so the child's lseek(SEEK_END) reports the
-	 * right size and its mmap starts at offset 0. */
-	if (tawc_lseek((int)mfd, 0, 0 /*SEEK_SET*/) < 0) {
-		tawc_close((int)mfd);
-		return TAWC_EFAULT;
-	}
-
-	return mfd;
+	prep->mfd     = c.fd;
+	prep->map     = c.base;
+	prep->map_cap = c.cap;
+	prep->len     = c.len;
+	return 0;
 }
 
-long tawcroot_exec_handler_commit(int mfd)
+static void prep_release(struct tawcroot_exec_prep *prep)
 {
-	/* (4) Open /proc/self/exe so we can execveat ourselves with
-	 * AT_EMPTY_PATH. Going through the path namespace would require
-	 * us to know our own filesystem path, which depends on how
-	 * tawcroot was invoked (in production, the APK's nativeLibraryDir
-	 * libtawcroot.so; under tawcroot/test.sh --device, the test scratch
-	 * dir). /proc/self/exe is always a working symlink to the
-	 * current executable. */
+	(void)tawc_munmap(prep->map, prep->map_cap);
+	tawc_close(prep->mfd);
+}
+
+static void *anon_map(size_t len)
+{
+	long m = tawc_mmap((void *)0, len,
+	                   TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE,
+	                   TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON, -1, 0);
+	return tawc_loader_mmap_is_err((uintptr_t)m) ? (void *)0
+	                                             : (void *)(uintptr_t)m;
+}
+
+long tawcroot_exec_handler_commit(struct tawcroot_exec_prep *prep)
+{
+	/* Open /proc/self/exe so we can execveat ourselves with
+	 * AT_EMPTY_PATH: our own filesystem path depends on how tawcroot
+	 * was invoked (the APK's libtawcroot.so, a test scratch dir), and
+	 * /proc/self/exe always names the running binary. */
 	long exe_fd = tawc_openat(AT_FDCWD, "/proc/self/exe",
 	                          O_RDONLY | O_CLOEXEC, 0);
 	if (exe_fd < 0) {
-		tawc_close((int)mfd);
+		prep_release(prep);
 		return TAWC_ENOEXEC;
 	}
 
-	/* (5) Build the new argv: ["<proctitle>", "--exec-child", "<fdstr>"].
-	 *
-	 * argv[0] is the serialized proctitle (space-joined guest cmdline
-	 * plus shebang slack) so the kernel builds the new process's arg
-	 * region big enough for the loader's in-place cmdline rewrite —
-	 * without it, every guest process's /proc/<pid>/cmdline is stuck
-	 * at "tawcroot --exec-child <fd>" (see proctitle.h). Entry
-	 * classification only looks at argv[1] and argv[2], so argv[0] is
-	 * free payload. The pointer targets the mmap'd state (NOT a shared
-	 * static — commit runs without exec_lock; see header note); the
-	 * kernel copies argv strings before the old mm goes away. */
 	char fdstr[24];
-	if (tawc_int_to_str(fdstr, sizeof fdstr, (int)mfd) <= 0) {
+	int fdlen = tawc_int_to_str(fdstr, sizeof fdstr, prep->mfd);
+	if (fdlen <= 0) {
 		tawc_close((int)exe_fd);
-		tawc_close((int)mfd);
+		prep_release(prep);
 		return TAWC_EFAULT;
 	}
 
-	char arg0_fallback[] = "tawcroot";
-	const char *arg0 = arg0_fallback;
-	/* (5b) envp for the re-exec: the guest's envp, as pointers into
-	 * the mapped state, so the kernel-built env region — what
-	 * /proc/<pid>/environ shows, to the process itself and to ps e —
-	 * carries the guest environment instead of nothing. The
-	 * synthesized guest stack gets its envp from the SAME state, so
-	 * the two views agree byte-for-byte. The new tawcroot incarnation
-	 * never reads config from its environ (Environment rule,
-	 * notes/tawcroot/architecture.md), so inheriting guest payload is
-	 * safe. Fallback on any validation failure: empty env — identical
-	 * to the pre-fix behaviour, and the guest still gets its real env
-	 * from the state. */
-	char *empty_env[1];
-	empty_env[0] = (char *)0;
-	char **envp_for_self = empty_env;
-	long map_rv = -1, env_arr_rv = -1;
-	size_t map_len = 0, env_arr_len = 0;
-	long sz = tawc_lseek((int)mfd, 0, 2 /*SEEK_END*/);
-	if (sz >= (long)sizeof(tawcroot_exec_state_header)) {
-		long mrv = tawc_mmap((void *)0, (size_t)sz, TAWC_MM_PROT_READ,
-		                     TAWC_MM_MAP_PRIVATE, (int)mfd, 0);
-		if (!tawc_loader_mmap_is_err((uintptr_t)mrv)) {
-			map_rv = mrv;
-			map_len = (size_t)sz;
-			const tawcroot_exec_state_header *h =
-				(const tawcroot_exec_state_header *)(uintptr_t)mrv;
-			const char *strings =
-				(const char *)(uintptr_t)mrv + sizeof *h;
-			const char *end;
-			if (h->magic == TAWCROOT_EXEC_STATE_MAGIC &&
-			    h->version == TAWCROOT_EXEC_STATE_VERSION &&
-			    sizeof *h + (size_t)h->string_bytes <= (size_t)sz) {
-				end = strings + h->string_bytes;
-				if (h->proctitle_off != 0 &&
-				    h->proctitle_off < h->string_bytes) {
-					const char *p = strings + h->proctitle_off;
-					const char *q = p;
-					while (q < end && *q) q++;
-					if (q < end) arg0 = p;
-				}
-				/* Pointer array in a private anon mapping —
-				 * commit runs unlocked and may touch no shared
-				 * statics (see header note). */
-				if (h->envc <= TAWCROOT_EXEC_STATE_MAX_ENV) {
-					size_t need = ((size_t)h->envc + 1) *
-					              sizeof(char *);
-					long ar = tawc_mmap((void *)0, need,
-					        TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE,
-					        TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON,
-					        -1, 0);
-					if (!tawc_loader_mmap_is_err((uintptr_t)ar)) {
-						char **arr = (char **)(uintptr_t)ar;
-						uint32_t i = 0;
-						for (; i < h->envc; i++) {
-							uint32_t off = h->envp_off[i];
-							if (off >= h->string_bytes)
-								break;
-							const char *q = strings + off;
-							while (q < end && *q) q++;
-							if (q == end) break;
-							arr[i] = (char *)(strings + off);
-						}
-						if (i == h->envc) {
-							arr[i] = (char *)0;
-							envp_for_self = arr;
-							env_arr_rv = ar;
-							env_arr_len = need;
-						} else {
-							(void)tawc_munmap(
-							    (void *)(uintptr_t)ar,
-							    need);
-						}
-					}
-				}
-			}
-		}
-	}
+	const tawcroot_exec_state_header *h =
+		(const tawcroot_exec_state_header *)prep->map;
+	const char *strings = (const char *)prep->map + sizeof *h;
 
-	char *new_argv[4];
-	new_argv[0] = (char *)arg0;
+	/* argv for the re-exec: [t0, "--exec-child", fd, t1, t2, ...].
+	 *
+	 * The title pieces tN size the new process's kernel arg region
+	 * (argv[0] .. argv[argc-1], contiguous) to exactly cmdline_bytes,
+	 * so the loader can overwrite it in place with the guest's real
+	 * NUL-joined argv (proctitle.h); without them every guest's
+	 * /proc/<pid>/cmdline reads "tawcroot --exec-child <fd>". One
+	 * kernel string is capped at MAX_ARG_STRLEN, so a long cmdline
+	 * spans several pieces. The protocol args stay in slots 1-2 for
+	 * classify_entry. Content is visible only until the loader's
+	 * rewrite: the guest argv space-joined, then space padding.
+	 * Cmdlines shorter than the protocol args keep a few trailing
+	 * NULs — nothing to shrink below them. */
+	size_t overhead = sizeof "--exec-child" + (size_t)fdlen + 1;
+	size_t title = h->cmdline_bytes > overhead + 1
+		? h->cmdline_bytes - overhead : 1;
+	size_t smax = max_arg_strlen();
+	size_t npieces = (title + smax - 1) / smax;
+	size_t argv_len = (npieces + 3) * sizeof(char *);
+	size_t envp_len = ((size_t)h->envc + 1) * sizeof(char *);
+	size_t scratch_len = argv_len + envp_len + title;
+	/* Private anon scratch: commit runs unlocked and may touch no
+	 * shared statics (see header note). */
+	uint8_t *scratch = anon_map(scratch_len);
+	if (!scratch) {
+		tawc_close((int)exe_fd);
+		prep_release(prep);
+		return TAWC_ENOMEM;
+	}
+	char **new_argv = (char **)scratch;
+	char **new_envp = (char **)(scratch + argv_len);
+	char *tbuf = (char *)(scratch + argv_len + envp_len);
+
+	const char *src = strings + h->argv_off;
+	size_t src_left = h->argv_bytes;
+	size_t pos = 0;
+	for (size_t i = 0; i < npieces; i++) {
+		size_t n = title - pos < smax ? title - pos : smax;
+		char *piece = tbuf + pos;
+		for (size_t k = 0; k + 1 < n; k++) {
+			char ch = ' ';
+			if (src_left > 0) { ch = *src ? *src : ' '; src++; src_left--; }
+			piece[k] = ch;
+		}
+		piece[n - 1] = 0;
+		pos += n;
+		size_t slot = i == 0 ? 0 : i + 2;
+		new_argv[slot] = piece;
+	}
 	new_argv[1] = (char *)"--exec-child";
 	new_argv[2] = fdstr;
-	new_argv[3] = (char *)0;
+	new_argv[npieces + 2] = (char *)0;
 
-	long er = tawc_execveat((int)exe_fd, "", new_argv, envp_for_self,
+	/* envp for the re-exec: the guest's envp, so the kernel-built env
+	 * region (/proc/<pid>/environ, ps e) carries the guest environment.
+	 * The synthesized guest stack gets its envp from the same state,
+	 * so the two views agree byte for byte. The new tawcroot never
+	 * reads config from its environ (Environment rule,
+	 * notes/tawcroot/architecture.md). */
+	tawcroot_exec_state_split(strings + h->envp_off, h->envc,
+	                          (const char **)new_envp);
+
+	long er = tawc_execveat((int)exe_fd, "", new_argv, new_envp,
 	                        AT_EMPTY_PATH);
 	/* On success execveat does not return. On failure er is -errno. */
-	if (env_arr_rv >= 0)
-		(void)tawc_munmap((void *)(uintptr_t)env_arr_rv, env_arr_len);
-	if (map_rv >= 0)
-		(void)tawc_munmap((void *)(uintptr_t)map_rv, map_len);
+	(void)tawc_munmap(scratch, scratch_len);
 	tawc_close((int)exe_fd);
-	tawc_close((int)mfd);
+	prep_release(prep);
 	return er;
 }
 
-long tawcroot_exec_handler_perform(const char *path, int argc,
+long tawcroot_exec_handler_perform(const char *path,
                                    const char *const *argv,
                                    const char *const *envp)
 {
-	long mfd = tawcroot_exec_handler_prepare(path, argc, argv, envp);
-	if (mfd < 0) return mfd;
-	return tawcroot_exec_handler_commit((int)mfd);
+	/* argv/envp are ours, but prepare reads them as guest memory. */
+	if (!tawc_usercopy_works) {
+		long u = tawc_usercopy_init();
+		if (u < 0) return u;
+	}
+	struct tawcroot_exec_prep prep;
+	long r = tawcroot_exec_handler_prepare(path, argv, envp, &prep);
+	if (r < 0) return r;
+	return tawcroot_exec_handler_commit(&prep);
 }

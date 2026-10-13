@@ -70,6 +70,10 @@ void tawcroot_loader_set_host_auxv(uint64_t hwcap, uint64_t hwcap2,
 	g_host_page_size = is_pow2(page_size) ? (size_t)page_size : 4096;
 }
 
+size_t tawcroot_host_page_size(void)
+{
+	return g_host_page_size;
+}
 
 /* Stage tag for parse_image so callers can distinguish ehdr vs phdr
  * failure and exit with the correct documented loader code (61 vs 62).
@@ -272,15 +276,17 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	 * interpreter, prepend the script path as the first arg. We mutate
 	 * a working argv array; argv[0] starts as the original guest path
 	 * and we rebuild from there. */
-	/* Sized to TAWC_EXEC_EFF_ARGV_MAX: must hold every argv the
-	 * collection layer accepted (see the constant's comment — a
-	 * smaller array here silently destroyed >256-arg execs). The 74
-	 * backstop only guards the --exec diagnostic path, which feeds
-	 * raw CLI argc without the collection-layer cap. */
-	static const char *eff_argv[TAWC_EXEC_EFF_ARGV_MAX + 1];
+	/* Room for every caller arg plus up to two prepends (interpreter +
+	 * optional shebang arg) per shebang level. Sized from argc — any
+	 * fixed cap here would kill the exec'd process post-commit instead
+	 * of returning E2BIG to the (long gone) caller. */
+	size_t eff_cap = (size_t)(args->argc > 0 ? args->argc : 1) +
+	                 2 * TAWC_SHEBANG_MAX_DEPTH + 1;
+	long eff_rv = tawc_mmap((void *)0, eff_cap * sizeof(char *), PROT_RW,
+	                        MAP_PA, -1, 0);
+	if (tawc_loader_mmap_is_err((uintptr_t)eff_rv)) LOADER_FAIL(74);
+	const char **eff_argv = (const char **)(uintptr_t)eff_rv;
 	int eff_argc = 0;
-	if (args->argc > (int)(sizeof eff_argv / sizeof eff_argv[0]) - 1)
-		LOADER_FAIL(74);
 	/* argv[0] passes through VERBATIM, like the kernel's: login shells
 	 * rely on a leading "-", busybox-style multiplexers dispatch on it,
 	 * and `exec -a` sets it freely. (An earlier revision seeded the
@@ -302,9 +308,7 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	 * argument under us (exactly what bit pacman-key). AT_EXECFN uses
 	 * args->guest_path directly, which is unaffected. */
 	long resolved_fd = resolve_shebangs((int)bin_fd, path_storage,
-	                                    eff_argv,
-	                                    sizeof eff_argv / sizeof eff_argv[0],
-	                                    &eff_argc);
+	                                    eff_argv, eff_cap, &eff_argc);
 	if (resolved_fd < 0) LOADER_FAIL(75);
 	bin_fd = (int)resolved_fd;
 
@@ -372,27 +376,6 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	}
 	tawc_close((int)bin_fd);
 
-	/* --- 4. Allocate fresh stack. ---
-	 *
-	 * Match Linux's default RLIMIT_STACK (8 MiB). 256 KiB was enough for
-	 * a hello-world but not for real coreutils: GCC's
-	 * -fstack-clash-protection has wc_lines/wc_bytes pre-allocate a
-	 * 256 KiB read buffer in the stack frame and probe each page on the
-	 * way down, which walks straight off the bottom of a 256 KiB region
-	 * and SIGSEGVs (SEGV_MAPERR at rsp). MAP_GROWSDOWN is broken on
-	 * modern kernels, so we just commit the full 8 MiB up front.
-	 * Anonymous pages are demand-zeroed, so the cost is reservation +
-	 * page tables — no real RSS until the guest touches them. */
-	const size_t STACK_SZ = 8 * 1024 * 1024;
-	long stack_rv = tawc_mmap((void *)0, STACK_SZ, PROT_RW, MAP_PA, -1, 0);
-	if (tawc_loader_mmap_is_err((uintptr_t)stack_rv)) LOADER_FAIL(70);
-	void *stack = (void *)stack_rv;
-	/* Guard page at the low end so stack overflow is a deterministic
-	 * SIGSEGV instead of a silent walk into whatever mapping the
-	 * kernel placed below. */
-	if (tawc_mprotect(stack, PAGE, TAWC_MM_PROT_NONE) != 0)
-		LOADER_FAIL(70);
-
 	uint8_t random16[16];
 	if (tawc_getrandom(random16, 16, 0) != 16) LOADER_FAIL(71);
 
@@ -432,6 +415,30 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 		.at_flags        = g_host_at_flags,
 	};
 
+	/* --- 4. Allocate fresh stack. ---
+	 *
+	 * Linux's default RLIMIT_STACK (8 MiB) of usable stack, plus room
+	 * for the argv/envp/auxv block on top, so a multi-MB command line
+	 * doesn't eat into it (Linux charges args against the rlimit; being
+	 * slightly more generous is harmless). 256 KiB was enough for a
+	 * hello-world but not for real coreutils: GCC's
+	 * -fstack-clash-protection has wc_lines/wc_bytes pre-allocate a
+	 * 256 KiB read buffer in the stack frame and probe each page on the
+	 * way down. MAP_GROWSDOWN is broken on modern kernels, so we commit
+	 * the whole region up front. Anonymous pages are demand-zeroed, so
+	 * the cost is reservation + page tables — no real RSS until the
+	 * guest touches them. */
+	size_t STACK_SZ = 8 * 1024 * 1024 +
+		((tawc_loader_stack_bytes(&in) + PAGE - 1) & ~(PAGE - 1));
+	long stack_rv = tawc_mmap((void *)0, STACK_SZ, PROT_RW, MAP_PA, -1, 0);
+	if (tawc_loader_mmap_is_err((uintptr_t)stack_rv)) LOADER_FAIL(70);
+	void *stack = (void *)stack_rv;
+	/* Guard page at the low end so stack overflow is a deterministic
+	 * SIGSEGV instead of a silent walk into whatever mapping the
+	 * kernel placed below. */
+	if (tawc_mprotect(stack, PAGE, TAWC_MM_PROT_NONE) != 0)
+		LOADER_FAIL(70);
+
 	struct tawc_loader_stack_out so;
 	if (tawc_loader_build_stack(stack, STACK_SZ, &in, &so) != 0)
 		LOADER_FAIL(72);
@@ -468,11 +475,17 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 	if (tawc_loader_mmap_is_err((uintptr_t)mrv)) LOADER_FAIL(81);
 	const void *buf = (const void *)mrv;
 
-	static const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	static const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state st;
-	if (tawcroot_exec_state_read(buf, (size_t)size, argv_buf, envp_buf, &st) != 0)
+	if (tawcroot_exec_state_read(buf, (size_t)size, &st) != 0)
 		LOADER_FAIL(82);
+	size_t arr_bytes = ((size_t)st.argc + 1 + (size_t)st.envc + 1) *
+	                   sizeof(char *);
+	long arr_rv = tawc_mmap((void *)0, arr_bytes, PROT_RW, MAP_PA, -1, 0);
+	if (tawc_loader_mmap_is_err((uintptr_t)arr_rv)) LOADER_FAIL(83);
+	const char **argv_buf = (const char **)(uintptr_t)arr_rv;
+	const char **envp_buf = argv_buf + st.argc + 1;
+	tawcroot_exec_state_split(st.argv_strings, st.argc, argv_buf);
+	tawcroot_exec_state_split(st.envp_strings, st.envc, envp_buf);
 
 	/* Phase 2g: re-establish tawcroot's per-process state in the new
 	 * incarnation. The seccomp filter is inherited (kernel state) but
@@ -521,8 +534,8 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 	struct tawc_loader_exec_args ea = {
 		.guest_path = st.path,
 		.argc       = (int)st.argc,
-		.argv       = (const char *const *)st.argv,
-		.envp       = (const char *const *)st.envp,
+		.argv       = argv_buf,
+		.envp       = envp_buf,
 		.platform   = platform,
 	};
 	tawcroot_loader_exec(&ea);

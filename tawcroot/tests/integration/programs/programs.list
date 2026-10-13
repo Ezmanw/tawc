@@ -44,3 +44,4 @@ dynamic_exit42
 dynamic_argv_check
 dynamic_big_stack
 dynamic_legacy_nr_probe
+dynamic_exec_limits

@@ -422,11 +422,8 @@ test(exec_state_carries_bind_ro_and_root_ro)
 					   1, argv, envp, &ex);
 	test_true(w > 0);
 
-	const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, (size_t)w, argv_buf,
-						  envp_buf, &out), 0);
+	test_int_eq((int)tawcroot_exec_state_read(buf, (size_t)w, &out), 0);
 	test_int_eq((int)out.n_binds, 2);
 	test_int_eq(out.bind_ro[0], 1);
 	test_int_eq(out.bind_ro[1], 0);
@@ -456,11 +453,8 @@ test(exec_state_defaults_rw_without_flags)
 					   1, argv, envp, &ex);
 	test_true(w > 0);
 
-	const char *argv_buf[TAWCROOT_EXEC_STATE_MAX_ARGS + 1];
-	const char *envp_buf[TAWCROOT_EXEC_STATE_MAX_ENV + 1];
 	tawcroot_exec_state out;
-	test_int_eq((int)tawcroot_exec_state_read(buf, (size_t)w, argv_buf,
-						  envp_buf, &out), 0);
+	test_int_eq((int)tawcroot_exec_state_read(buf, (size_t)w, &out), 0);
 	test_int_eq(out.bind_ro[0], 0);
 	test_int_eq((int)out.root_ro, 0);
 	free(buf);

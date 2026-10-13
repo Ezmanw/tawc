@@ -119,8 +119,10 @@ not a to-do list** — live work lives in `issues/` and `plans/`.
      segments, safe to inherit; without it, `clock_gettime` falls
      back to real syscalls, measurable perf regression). The initial
      stack lives on a freshly `mmap`'d region (8 MiB, matching the
-     kernel's default RLIMIT_STACK, + `PROT_NONE` guard page at the
-     low end), not on our existing stack.
+     kernel's default RLIMIT_STACK, plus the size of the argv/envp/
+     auxv block, + `PROT_NONE` guard page at the low end), not on our
+     existing stack. Exec argv/envp limits follow the kernel's,
+     including `RLIMIT_STACK` (path-translation.md, "Argv/envp limits").
      **`SP` must be 16-byte aligned on entry** — hardware
      requirement on aarch64 (unaligned SP faults), ABI
      requirement on x86_64 (SSE assumes it).
@@ -474,9 +476,10 @@ covered by unit/hosted/smoke tests.)
   observer sees as "/" where a real kernel would show the chroot dir.
   Cross-process `comm`/`cmdline`/`environ` ARE kernel-truthful since
   the proctitle work (proctitle.h: PR_SET_NAME + in-place arg-region
-  rewrite at the loader jump; the region is pre-sized byte-exactly via
-  exec_state's proctitle as the execveat argv[0], and the execveat
-  envp points at the guest env strings in the state) — that's what
+  rewrite at the loader jump; the region is pre-sized byte-exactly by
+  title strings in the execveat argv, split at `MAX_ARG_STRLEN` so the
+  cmdline is exact at any size, and the execveat envp points at the
+  guest env strings in the state) — that's what
   makes pgrep/pkill/ps identify guest processes. Caller argv[0] also
   passes through verbatim (login-shell "-sh", busybox dispatch,
   `exec -a`); an earlier loader revision replaced it with the exec

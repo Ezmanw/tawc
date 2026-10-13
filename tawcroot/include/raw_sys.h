@@ -108,6 +108,18 @@ static inline long tawc_mprotect(void *addr, size_t len, int prot)
 static inline long tawc_munmap(void *addr, size_t len)
 { return TAWC_RAW(TAWC_SYS_munmap, (long)addr, (long)len, 0, 0, 0, 0); }
 
+static inline long tawc_mremap(void *old, size_t old_len, size_t new_len,
+                               int flags)
+{ return TAWC_RAW(TAWC_SYS_mremap, (long)old, (long)old_len, (long)new_len,
+		  flags, 0, 0); }
+
+static inline long tawc_ftruncate(int fd, long len)
+{ return TAWC_RAW(TAWC_SYS_ftruncate, fd, len, 0, 0, 0, 0); }
+
+/* prlimit64(0, res, NULL, out): read the calling process's limit. */
+static inline long tawc_getrlimit64(int res, void *out)
+{ return TAWC_RAW(TAWC_SYS_prlimit64, 0, res, 0, (long)out, 0, 0); }
+
 static inline long tawc_pread64(int fd, void *buf, size_t n, long off)
 { return TAWC_RAW(TAWC_SYS_pread64, fd, (long)buf, (long)n, off, 0, 0); }
 

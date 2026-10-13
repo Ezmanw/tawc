@@ -8,8 +8,6 @@
 #include <stdint.h>
 
 #include "errno_neg.h"
-#include "exec_state.h"
-#include "loader_exec.h"
 #include "loader_stack.h"
 #include "tawc_string.h"
 #include "stack_budget.h"
@@ -23,6 +21,18 @@ TAWCROOT_FRAME_CAP_EXEMPT
 /* Round a uintptr_t down to a power-of-two boundary. */
 static inline uintptr_t align_down(uintptr_t v, uintptr_t a)
 { return v & ~(a - 1); }
+
+size_t tawc_loader_stack_bytes(const struct tawc_loader_stack_input *in)
+{
+	size_t n = 16 + strlen(in->at_platform) + 1 + strlen(in->at_execfn) + 1;
+	size_t ptrs = 1 /* argc */ + 2 /* NULLs */;
+	for (int i = 0; i < in->argc; i++, ptrs++)
+		n += strlen(in->argv[i]) + 1;
+	for (int i = 0; in->envp[i]; i++, ptrs++)
+		n += strlen(in->envp[i]) + 1;
+	return n + ptrs * sizeof(uintptr_t) +
+	       MAX_AUXV * sizeof(struct tawc_loader_aux_entry) + 16;
+}
 
 long tawc_loader_build_stack(void *region_low, size_t region_size,
                              const struct tawc_loader_stack_input *in,
@@ -79,37 +89,21 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 		addr_execfn = cur;
 	}
 
-	/* envp/argv strings: walked in reverse logical order so that
-	 * argv[0] ends up at the lowest string address. We store each
-	 * string's eventual pointer in a fixed-size on-stack array.
-	 * Caps MUST cover everything the exec_state collection limits
-	 * admit: anything the collection layer accepted has already
-	 * passed the E2BIG check and the execveat commit — rejecting it
-	 * here kills the exec'd process instead of returning an error to
-	 * the (long gone) caller. A 1024 cap here vs 4096 at collection
-	 * did exactly that for 1025+-arg execs (`rm *` on a big
-	 * directory). argv additionally needs the shebang-prepend
-	 * headroom (TAWC_EXEC_EFF_ARGV_MAX), since resolve_shebangs can
-	 * push argc past the collection cap. */
-#define MAX_ARGS TAWC_EXEC_EFF_ARGV_MAX
-#define MAX_ENV  TAWCROOT_EXEC_STATE_MAX_ENV
-	if (in->argc > MAX_ARGS || envc > MAX_ENV) return TAWC_EINVAL;
-	uintptr_t argv_buf[MAX_ARGS];
-	uintptr_t envp_buf[MAX_ENV];
-
+	/* envp/argv strings: written in reverse logical order, so argv
+	 * strings then envp strings sit back to back from the lowest
+	 * address up; step 4 rebuilds the pointers by walking them (no
+	 * per-string pointer array, so no cap on argc/envc). */
 	for (int i = envc - 1; i >= 0; i--) {
 		size_t n = strlen(in->envp[i]) + 1;
 		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
 		memcpy((void *)cur, in->envp[i], n);
-		envp_buf[i] = cur;
 	}
 	for (int i = in->argc - 1; i >= 0; i--) {
 		size_t n = strlen(in->argv[i]) + 1;
 		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
 		memcpy((void *)cur, in->argv[i], n);
-		argv_buf[i] = cur;
 	}
 
 	uintptr_t strings_lo = cur;
@@ -176,18 +170,20 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 	*(uint64_t *)w = (uint64_t)in->argc;
 	w += sizeof(uint64_t);
 
-	/* argv ptrs + NULL */
+	/* argv ptrs + NULL, then envp ptrs + NULL, walking the strings */
+	uintptr_t str = strings_lo;
 	for (int i = 0; i < in->argc; i++) {
-		*(uint64_t *)w = (uint64_t)argv_buf[i];
+		*(uint64_t *)w = (uint64_t)str;
 		w += sizeof(uint64_t);
+		str += strlen((const char *)str) + 1;
 	}
 	*(uint64_t *)w = 0;
 	w += sizeof(uint64_t);
 
-	/* envp ptrs + NULL */
 	for (int i = 0; i < envc; i++) {
-		*(uint64_t *)w = (uint64_t)envp_buf[i];
+		*(uint64_t *)w = (uint64_t)str;
 		w += sizeof(uint64_t);
+		str += strlen((const char *)str) + 1;
 	}
 	*(uint64_t *)w = 0;
 	w += sizeof(uint64_t);

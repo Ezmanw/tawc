@@ -4,20 +4,13 @@
  * (build an exec_state memfd, under exec_lock) + commit (re-exec
  * tawcroot with --exec-child, after unlock) pair.
  *
- * The handlers themselves are small adapters: they pull pointers and
- * argv/envp arrays out of the guest's saved registers, copy strings
- * via usercopy (so a wild guest pointer returns -EFAULT instead of
- * faulting the supervisor), and forward to the perform routine.
+ * The handlers themselves are small adapters: they copy the path out
+ * of guest memory via usercopy (so a wild guest pointer returns -EFAULT
+ * instead of faulting the supervisor) and hand the guest's argv/envp
+ * arrays to prepare, which reads them the same way.
  *
- * Layered limitations:
- *
- *   - argv / envp are bounded by `MAX_ARGS` / `MAX_ENV`. Real-world
- *     processes pass <100; the cap is generous and matches
- *     exec_state's serialization limit.
- *
- *   - String length is bounded by `MAX_STR` per entry (16 KB). Linux
- *     itself caps argv strings at MAX_ARG_STRLEN (32 pages) so most
- *     normal usage fits comfortably.
+ * argv/envp limits are the kernel's (exec_handler.h); the path is
+ * copied with the kernel's PATH_MAX rule (ENAMETOOLONG at 4096 bytes).
  *
  *   - execveat's AT_SYMLINK_NOFOLLOW flag is intentionally not emulated
  *     yet; callers get -ENOSYS rather than a silently-followed symlink.
@@ -31,7 +24,6 @@
 #include "dispatch.h"
 #include "errno_neg.h"
 #include "exec_handler.h"
-#include "exec_state.h"
 #include "io.h"
 #include "path.h"
 #include "raw_sys.h"
@@ -40,89 +32,14 @@
 #include "tawc_uapi.h"
 #include "usercopy.h"
 
-/* Keep the collection caps in lockstep with the exec_state
- * serialization caps — collecting more than the writer can serialize
- * would E2BIG after the fact. */
-#define MAX_ARGS     TAWCROOT_EXEC_STATE_MAX_ARGS
-#define MAX_ENV      TAWCROOT_EXEC_STATE_MAX_ENV
-/* Bash-launched binaries inherit an environment that easily blows past
- * a 4 KB per-string limit — `LS_COLORS` runs 5-6 KB in many configs,
- * `_=...` can reflect a long absolute path, and bash propagates a few
- * exported function bodies if there are any (BASH_FUNC_*). When a
- * single env string overflows our buffer, `tawc_copy_string_from_guest`
- * returns -ENAMETOOLONG, which `do_exec` returns as the execve(2)
- * result — bash then prints "File name too long" and gives up. 16 KB
- * comfortably handles the bash + /etc/profile.d combinations we hit
- * on Arch. */
-#define MAX_STR      (16 * 1024)
+/* Exec path buffers. The kernel's getname() rejects a path of
+ * PATH_MAX bytes or more; a dirfd-joined path can legally be longer. */
+#define EXEC_PATH_MAX 4096
+#define RESOLVED_MAX  (16 * 1024)
 
-/* Walk a guest pointer-array (argv or envp), copying each pointed-to
- * NUL-terminated string into a packed buffer and returning a parallel
- * array of pointers into that buffer.
- *
- *   guest_arr:    guest pointer to array of (char *) pointers
- *   strings:      caller-owned packed-string buffer (sized strings_cap)
- *   ptrs:         caller-owned array of (const char *) pointers
- *                 (sized cap+1 for NULL terminator)
- *   cap:          max number of array entries we'll accept
- *   strings_cap:  total bytes available in `strings`
- *
- * Returns the entry count (excluding NULL terminator) on success, or
- * -errno on failure (-E2BIG if too many entries or the packed buffer
- * is exhausted, -ENAMETOOLONG if one string exceeds its slot, -EFAULT
- * for bad guest pointers). A NULL guest array is treated as an empty
- * list, matching the kernel (Linux permits execve(path, NULL, NULL)). */
-static long collect_array(char *const *guest_arr,
-                          char *strings, size_t strings_cap,
-                          const char **ptrs, int cap)
-{
-	if (!guest_arr) {
-		/* Kernel-compatible: a NULL argv/envp is an empty list. */
-		ptrs[0] = (const char *)0;
-		return 0;
-	}
-
-	size_t off = 0;
-	int i = 0;
-	for (;;) {
-		/* Copy the pointer at guest_arr[i] into local p. */
-		uintptr_t p = 0;
-		long rc = tawc_copy_from_guest(&p, sizeof p,
-		                               (const void *)&guest_arr[i]);
-		if (rc < 0) return rc;
-		if (p == 0) {
-			ptrs[i] = (const char *)0;
-			return i;
-		}
-		/* `ptrs` holds cap+1 slots: exactly `cap` entries plus the
-		 * NULL terminator fit; only a non-NULL entry at index cap
-		 * overflows. */
-		if (i >= cap) return TAWC_E2BIG;
-
-		/* Copy the string at p. */
-		size_t avail = strings_cap > off ? strings_cap - off : 0;
-		if (avail == 0) return TAWC_E2BIG;
-		size_t want = avail > MAX_STR ? MAX_STR : avail;
-		long n = tawc_copy_string_from_guest(strings + off, want,
-		                                     (const char *)p);
-		if (n < 0) {
-			/* A single oversized argv/env string is -E2BIG to the
-			 * kernel (MAX_ARG_STRLEN), not the -ENAMETOOLONG our
-			 * string copy returns for a too-long path. Reshape it
-			 * so the guest sees the errno execve(2) really gives. */
-			if (n == TAWC_ENAMETOOLONG) return TAWC_E2BIG;
-			return n;
-		}
-		ptrs[i] = strings + off;
-		off += (size_t)n + 1;  /* +1 for the NUL */
-		i++;
-	}
-}
-
-/* All the exec collection state (path_buf, argv/envp strings + ptr
- * arrays in do_exec_path, guest_path/resolved in handle_execveat, and
- * exec_handler.c's state_buf) is `static` — ~400 KB that doesn't fit
- * the handler stack budget. SIGSYS handlers run concurrently on
+/* The exec staging state (path_buf, guest_path/resolved below and
+ * exec_handler.c's reader and bind/shm export buffers) is `static` —
+ * it doesn't fit the handler stack budget. SIGSYS handlers run concurrently on
  * multiple guest threads (sa_mask only masks the trapping thread), and
  * a CLONE_VM child exec'ing while a sibling execs shares this address
  * space, so two concurrent execs could interleave writes into these
@@ -152,51 +69,20 @@ static void exec_unlock(void)
 	__atomic_clear(&g_exec_lock, __ATOMIC_RELEASE);
 }
 
-/* Common path: parse arg0 = path pointer, arg1 = argv, arg2 = envp;
- * collect strings; call prepare. Returns the serialized exec_state
- * memfd (>= 0) for the caller to commit after unlocking, or -errno
- * to write back to the guest as the syscall return. */
-static long do_exec_path(const char *path,
-                         char *const *guest_argv, char *const *guest_envp)
-{
-	if (!path) return TAWC_EFAULT;
-
-	/* argv: 64 KB total, MAX_STR per string. argv overflow is rare —
-	 * most callers pass a handful of short args — but ld-conf and
-	 * make recipes can occasionally chain dozens of long paths. */
-	static char argv_strings[64 * 1024];
-	static const char *argv_ptrs[MAX_ARGS + 1];
-	long argc = collect_array(guest_argv, argv_strings, sizeof argv_strings,
-	                          argv_ptrs, MAX_ARGS);
-	if (argc < 0) return argc;
-
-	/* envp: 256 KB total. See MAX_STR comment for sizing rationale.
-	 * Bash inherits a busy environment by the time it forks any child,
-	 * and we pack the whole thing into our memfd before the
-	 * execveat-into-self handoff — there's no opportunity to skip
-	 * strings that don't fit. */
-	static char envp_strings[256 * 1024];
-	static const char *envp_ptrs[MAX_ENV + 1];
-	long envc = collect_array(guest_envp, envp_strings, sizeof envp_strings,
-	                          envp_ptrs, MAX_ENV);
-	if (envc < 0) return envc;
-
-	/* Returns the serialized exec_state memfd (>= 0) or -errno; the
-	 * caller commits (execveats) after dropping the lock. */
-	return tawcroot_exec_handler_prepare(path, (int)argc,
-	                                     argv_ptrs, envp_ptrs);
-}
-
 static long do_exec(const void *guest_path,
-                    char *const *guest_argv, char *const *guest_envp)
+                    char *const *guest_argv, char *const *guest_envp,
+                    struct tawcroot_exec_prep *prep)
 {
 	if (!guest_path) return TAWC_EFAULT;
 
-	static char path_buf[MAX_STR];
+	static char path_buf[EXEC_PATH_MAX];
 	long pn = tawc_copy_string_from_guest(path_buf, sizeof path_buf,
 	                                      (const char *)guest_path);
 	if (pn < 0) return pn;
-	return do_exec_path(path_buf, guest_argv, guest_envp);
+	return tawcroot_exec_handler_prepare(path_buf,
+	                                     (const char *const *)guest_argv,
+	                                     (const char *const *)guest_envp,
+	                                     prep);
 }
 
 /* execve(path, argv, envp). Both x86_64 (NR 59) and aarch64 (NR 221)
@@ -210,9 +96,10 @@ static long do_exec(const void *guest_path,
 static long handle_execve(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
+	struct tawcroot_exec_prep prep;
 	exec_lock();
 	long r = do_exec((const void *)args->a, (char *const *)args->b,
-	                 (char *const *)args->c);
+	                 (char *const *)args->c, &prep);
 	exec_unlock();
 	if (r < 0) return r;
 	/* commit() returns only on failure; on success it execveats away —
@@ -220,13 +107,14 @@ static long handle_execve(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * it widened to get the binary open (a 4111 sudo). Restore first;
 	 * no-op when nothing was widened. */
 	tawcroot_rescue_restore();
-	return tawcroot_exec_handler_commit((int)r);
+	return tawcroot_exec_handler_commit(&prep);
 }
 
 /* execveat(dirfd, path, argv, envp, flags). Handles the common fexecve(3)
  * shape: execveat(fd, "", argv, envp, AT_EMPTY_PATH), plus dirfd-relative
  * non-empty paths that can be reverse-translated into the rootfs view. */
-static long execveat_locked(const tawcroot_syscall_args *args)
+static long execveat_locked(const tawcroot_syscall_args *args,
+                            struct tawcroot_exec_prep *prep)
 {
 	int dirfd = (int)args->a;
 	int flags = (int)args->e;
@@ -235,22 +123,22 @@ static long execveat_locked(const tawcroot_syscall_args *args)
 	if (flags & AT_SYMLINK_NOFOLLOW) return TAWC_ENOSYS;
 	if (dirfd == AT_FDCWD)
 		return do_exec((const void *)args->b, (char *const *)args->c,
-		               (char *const *)args->d);
+		               (char *const *)args->d, prep);
 
-	static char guest_path[MAX_STR];
+	static char guest_path[EXEC_PATH_MAX];
 	long pn = tawc_copy_string_from_guest(guest_path, sizeof guest_path,
 	                                      (const char *)args->b);
 	if (pn < 0) return pn;
 
-	if (guest_path[0] == '/') {
-		return do_exec_path(guest_path, (char *const *)args->c,
-		                    (char *const *)args->d);
-	}
+	const char *const *argv = (const char *const *)args->c;
+	const char *const *envp = (const char *const *)args->d;
+	if (guest_path[0] == '/')
+		return tawcroot_exec_handler_prepare(guest_path, argv, envp, prep);
 
 	if (guest_path[0] == 0 && !(flags & AT_EMPTY_PATH))
 		return TAWC_ENOENT;
 
-	static char resolved[MAX_STR];
+	static char resolved[RESOLVED_MAX];
 	long rn = tawcroot_fd_to_guest_abs(dirfd, resolved, sizeof resolved);
 	if (rn < 0) return rn;
 
@@ -266,20 +154,20 @@ static long execveat_locked(const tawcroot_syscall_args *args)
 		if (ar < 0) return ar;
 	}
 
-	return do_exec_path(resolved, (char *const *)args->c,
-	                    (char *const *)args->d);
+	return tawcroot_exec_handler_prepare(resolved, argv, envp, prep);
 }
 
 static long handle_execveat(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
+	struct tawcroot_exec_prep prep;
 	exec_lock();
-	long r = execveat_locked(args);
+	long r = execveat_locked(args, &prep);
 	exec_unlock();
 	if (r < 0) return r;
 	/* See handle_execve. */
 	tawcroot_rescue_restore();
-	return tawcroot_exec_handler_commit((int)r);
+	return tawcroot_exec_handler_commit(&prep);
 }
 
 void tawcroot_exec_register(void)

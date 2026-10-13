@@ -15,10 +15,10 @@
  *     NUL-joined argv, NUL-filling the tail — the classic unprivileged
  *     setproctitle technique. The region can't be grown without
  *     CAP_SYS_RESOURCE, so the exec handler pre-sizes it EXACTLY:
- *     exec_state's proctitle (the execveat argv[0]) is computed as the
- *     post-shebang NUL-joined argv length minus the "--exec-child <fd>"
- *     protocol overhead, so the rewritten cmdline normally has zero
- *     trailing slack. Residual NULs remain only when the cmdline is
+ *     commit() pads the execveat argv with title strings (split at
+ *     MAX_ARG_STRLEN) totalling the post-shebang NUL-joined argv
+ *     length minus the "--exec-child <fd>" protocol overhead, so the
+ *     rewritten cmdline normally has zero trailing slack at any size. Residual NULs remain only when the cmdline is
  *     shorter than the protocol args (nothing left to shrink) or on
  *     the top-level prod entry (region = the full tawcroot CLI);
  *     truncation only under probe/load TOCTOU races.

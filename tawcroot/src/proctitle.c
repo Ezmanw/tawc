@@ -3,10 +3,12 @@
  * the guest starts. */
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <sys/prctl.h>
 
 #include "io.h"
+#include "loader_map.h"
 #include "proctitle.h"
 #include "raw_sys.h"
 #include "tawc_string.h"
@@ -17,10 +19,6 @@
 static char *g_arg_start;
 static char *g_arg_end;
 
-/* Bounce buffer: sized like syscalls_exec.c's collection caps (16 KB
- * path + 64 KB argv) plus shebang expansion slack. BSS, not stack. */
-#define TITLE_BOUNCE_SIZE ((16 + 64 + 4) * 1024)
-static char g_bounce[TITLE_BOUNCE_SIZE];
 
 void tawcroot_proctitle_stash(int argc, char **argv)
 {
@@ -50,22 +48,26 @@ void tawcroot_proctitle_apply(const char *exec_path,
 
 	if (!g_arg_start || g_arg_end <= g_arg_start || !argv) return;
 
-	/* NUL-join argv into the bounce (sources may overlap the region),
-	 * then copy over the region and NUL-fill the tail. Truncate to
-	 * whichever of bounce/region fills first; the exec handler sizes
-	 * the region to the exact post-shebang argv byte count, so real
-	 * truncation only happens when the file changed between the
-	 * handler's probe and our load (TOCTOU). */
+	/* NUL-join argv into a bounce buffer (sources may overlap the
+	 * region), then copy over the region and NUL-fill the tail. The
+	 * exec handler sizes the region to the exact post-shebang argv byte
+	 * count, so truncation only happens when the file changed between
+	 * the handler's probe and our load (TOCTOU). */
 	size_t cap = (size_t)(g_arg_end - g_arg_start);
-	if (cap > sizeof g_bounce) cap = sizeof g_bounce;
+	long m = tawc_mmap((void *)0, cap,
+	                   TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE,
+	                   TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON, -1, 0);
+	if (tawc_loader_mmap_is_err((uintptr_t)m)) return;
+	char *bounce = (char *)(uintptr_t)m;
 	size_t len = 0;
 	for (int i = 0; i < argc && argv[i]; i++) {
 		const char *s = argv[i];
-		while (*s && len < cap - 1) g_bounce[len++] = *s++;
-		if (len < cap) g_bounce[len++] = 0;
+		while (*s && len < cap - 1) bounce[len++] = *s++;
+		if (len < cap) bounce[len++] = 0;
 		if (len >= cap - 1) break;
 	}
-	for (size_t k = 0; k < len; k++) g_arg_start[k] = g_bounce[k];
+	for (size_t k = 0; k < len; k++) g_arg_start[k] = bounce[k];
+	(void)tawc_munmap(bounce, cap);
 	for (char *p = g_arg_start + len; p < g_arg_end; p++) *p = 0;
 	/* Last byte NUL even on truncation: a non-NUL byte at arg_end-1
 	 * makes the kernel's cmdline read continue into the env region. */

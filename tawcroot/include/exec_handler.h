@@ -18,33 +18,38 @@
  *
  * This file's contract is two phases:
  *
- *   `tawcroot_exec_handler_prepare(path, argc, argv, envp)`
- *     - path: the UNTRANSLATED guest path. prepare translates it for
- *       the probe, and the exec-child re-translates it after re-exec
- *       (the rootfs view is rebuilt from the exec_state extras).
- *     - argv: NULL-terminated guest-supplied argv.
- *     - envp: NULL-terminated guest-supplied envp.
- *     - Validates the target like execve would (openable, regular
- *       file, some execute bit; directories are -EISDIR).
- *     - Creates non-CLOEXEC memfd, writes exec_state, rewinds.
- *     - Returns the memfd (>= 0) or -errno. Stages through static
- *       buffers — callers hold syscalls_exec.c's exec_lock.
+ *   `tawcroot_exec_handler_prepare(path, argv, envp, &prep)`
+ *     - path: the UNTRANSLATED guest path (already copied out of guest
+ *       memory). prepare translates it for the probe, and the
+ *       exec-child re-translates it after re-exec.
+ *     - argv / envp: the guest's pointer arrays, still in guest memory
+ *       (NULL = empty list). Read through usercopy.
+ *     - Mirrors execve(2)'s checks and errno order: open + probe the
+ *       file (ENOENT, EACCES, EISDIR, ...), then argv/envp against the
+ *       kernel's limits (E2BIG, EFAULT), then the binary format
+ *       (ENOEXEC, shebang interpreter errors, post-shebang E2BIG).
+ *     - Collects the strings straight into a non-CLOEXEC memfd mapping
+ *       that grows on demand, and fills `prep`.
+ *     - Returns 0 or -errno. Stages through static buffers — callers
+ *       hold syscalls_exec.c's exec_lock.
  *
- *   `tawcroot_exec_handler_commit(mfd)`
+ *   `tawcroot_exec_handler_commit(&prep)`
  *     - Opens /proc/self/exe, execveat-s self with
- *       `--exec-child <fdstr>`. Touches no shared statics — callers
- *       must have RELEASED exec_lock first (see below).
- *     - On success: never returns (control transfers to the new
- *       tawcroot incarnation).
- *     - On failure: closes mfd and returns -errno. Caller (the SIGSYS
- *       handler) surfaces this back to the guest as the result of its
- *       `execve` syscall.
+ *       `--exec-child <fd>`. Touches no shared statics — callers must
+ *       have RELEASED exec_lock first (see below).
+ *     - On success: never returns.
+ *     - On failure: releases `prep` and returns -errno.
  *
- * The handler uses raw_sys.h for every syscall. The exec path stages
- * argv/envp/exec_state in static buffers (here and in syscalls_exec.c);
- * a process-global spinlock in syscalls_exec.c (exec_lock) serializes
- * the static-buffer phase so two concurrent execs — or a CLONE_VM
- * child exec'ing while the parent execs — can't interleave.
+ * Limits follow fs/exec.c: each string at most MAX_ARG_STRLEN (32
+ * pages) including its NUL; the pointers ((max(argc,1) + envc) * 8)
+ * plus every string (path, envp, argv) within
+ * max(min(6 MiB, RLIMIT_STACK / 4), 128 KiB), re-checked after shebang
+ * rewriting. No tawcroot-specific caps.
+ *
+ * prepare stages through a few static buffers (guest readers, bind/shm
+ * export tables); a process-global spinlock in syscalls_exec.c
+ * (exec_lock) serializes it so concurrent execs — or a CLONE_VM child
+ * exec'ing while the parent execs — can't interleave.
  *
  * The phase split exists because the lock must be RELEASED before the
  * execveat commit point. A posix_spawn child (CLONE_VM|CLONE_VFORK)
@@ -63,34 +68,30 @@
 extern "C" {
 #endif
 
-/* Phase 1 of the re-exec dance: validate the target and serialize the
- * exec request. See module header.
- *
- * `path` is the guest path the guest wanted to exec (translation
- * happens inside). `argv` and `envp` are NULL-terminated arrays of
- * NUL-terminated strings (same shape as argv/envp passed to execve).
- *
- * Returns the non-CLOEXEC exec_state memfd (>= 0) on success, or
- * -errno:
- *   probe errors    raw open/translate errno (-ENOENT, -EACCES, …),
- *                   -EISDIR for directories, -EACCES for non-regular
- *                   or non-executable files
- *   -ENOSPC        exec_state too large for the serialization buffer
- *   -EFAULT        memfd creation / write / rewind failed */
-long tawcroot_exec_handler_prepare(const char *path, int argc,
+/* A prepared exec: the state memfd and prepare's mapping of it. */
+struct tawcroot_exec_prep {
+	int     mfd;
+	void   *map;      /* MAP_SHARED, map_cap bytes */
+	size_t  map_cap;
+	size_t  len;      /* state bytes (= memfd size) */
+};
+
+/* Phase 1: validate the target and serialize the exec request. See the
+ * module header. */
+long tawcroot_exec_handler_prepare(const char *path,
                                    const char *const *argv,
-                                   const char *const *envp);
+                                   const char *const *envp,
+                                   struct tawcroot_exec_prep *prep);
 
 /* Phase 2: execveat self as `--exec-child <mfd>`. Never returns on
- * success. On failure closes `mfd` and returns -errno (-ENOEXEC when
+ * success. On failure releases `prep` and returns -errno (-ENOEXEC when
  * /proc/self/exe couldn't be opened, else the execveat errno). */
-long tawcroot_exec_handler_commit(int mfd);
+long tawcroot_exec_handler_commit(struct tawcroot_exec_prep *prep);
 
-/* prepare + commit in one call, for single-threaded callers that don't
- * stage through the SIGSYS dispatch path (testhost --exec-via-handler).
- * Never returns 0 — either the dance succeeds and control transfers
- * to the new tawcroot, or we return a negative errno. */
-long tawcroot_exec_handler_perform(const char *path, int argc,
+/* prepare + commit for callers outside the SIGSYS path (testhost
+ * --exec-via-handler), with argv/envp in our own memory. Never returns
+ * 0. */
+long tawcroot_exec_handler_perform(const char *path,
                                    const char *const *argv,
                                    const char *const *envp);
 

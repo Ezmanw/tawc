@@ -356,16 +356,14 @@ test(stack_with_many_args)
 	munmap(region, 64 * 1024);
 }
 
-test(stack_accepts_collection_layer_max_args)
+test(stack_accepts_100k_args)
 {
-	/* The exec_state collection layer accepts up to
-	 * TAWCROOT_EXEC_STATE_MAX_ARGS args, and shebang resolution can
-	 * prepend up to TAWC_SHEBANG_MAX_DEPTH * 2 more; by the time the
-	 * loader runs, the caller has already been destroyed by the
-	 * execveat commit, so the loader must accept the full effective
-	 * count (a lower cap here killed 1025+-arg execs like `rm *` on
-	 * a big directory). */
-	enum { N = TAWC_EXEC_EFF_ARGV_MAX };
+	/* No argc cap: the exec handler admits whatever the kernel's
+	 * budget does, and by the time the loader runs the caller is gone,
+	 * so any cap here kills the exec'd process. (A fixed 1024 once
+	 * killed `rm *` on a big directory.) Size the region the way the
+	 * loader does. */
+	enum { N = 100000 };
 	static const char *argv[N + 1];
 	const char *envp[2] = { "VAR=value", NULL };
 	for (int i = 0; i < N; i++)
@@ -374,17 +372,24 @@ test(stack_accepts_collection_layer_max_args)
 
 	struct tawc_loader_stack_input in = make_input(N, argv, envp);
 
-	enum { REGION = 256 * 1024 };
-	uint8_t *region = alloc_region(REGION);
+	size_t need = tawc_loader_stack_bytes(&in);
+	test_true(need >= (size_t)N * (2 + 8));
+	size_t region_sz = (need + 4095) & ~(size_t)4095;
+	uint8_t *region = alloc_region(region_sz);
 	struct tawc_loader_stack_out out;
-	test_int_eq((int)tawc_loader_build_stack(region, REGION, &in, &out), 0);
+	test_int_eq((int)tawc_loader_build_stack(region, region_sz, &in, &out), 0);
+	test_true(out.data_lo >= (uintptr_t)region);
 
 	int got_argc;
 	char *const *got_argv;
-	tawc_loader_walk_stack(out.sp, &got_argc, &got_argv, NULL, NULL);
+	char *const *got_envp;
+	tawc_loader_walk_stack(out.sp, &got_argc, &got_argv, &got_envp, NULL);
 	test_int_eq(got_argc, N);
+	test_str_eq(got_argv[0], "a");
 	test_str_eq(got_argv[N - 1], "a");
 	test_ptr_eq(got_argv[N], NULL);
+	test_str_eq(got_envp[0], "VAR=value");
+	test_ptr_eq(got_envp[1], NULL);
 
-	munmap(region, REGION);
+	munmap(region, region_sz);
 }
