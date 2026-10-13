@@ -374,12 +374,17 @@ internal class AppsPane(
      * uninstall, unwritable store) leaves the list as-is.
      */
     private fun setEntryHidden(entry: LauncherEntry, hidden: Boolean) {
-        val ok = runCatching {
-            launcherStore.update(installation.id) { e, _ -> e.withField(entry.id, "hidden", if (hidden) true else null) }
-        }.getOrNull() != null
-        if (!ok) return
-        allEntries = allEntries.map { if (it.id == entry.id) it.copy(hidden = hidden) else it }
-        applyFilter()
+        val id = installation.id
+        uiScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    launcherStore.update(id) { e, _ -> e.withField(entry.id, "hidden", if (hidden) true else null) }
+                }.getOrNull() != null
+            }
+            if (!ok) return@launch
+            allEntries = allEntries.map { if (it.id == entry.id) it.copy(hidden = hidden) else it }
+            applyFilter()
+        }
     }
 
     /**

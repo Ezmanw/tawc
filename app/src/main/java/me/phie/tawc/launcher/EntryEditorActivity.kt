@@ -3,6 +3,7 @@ package me.phie.tawc.launcher
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
@@ -40,6 +41,7 @@ import me.phie.tawc.PointerEmulation
 import me.phie.tawc.R
 import me.phie.tawc.Settings
 import me.phie.tawc.compositor.NativeBridge
+import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.ui.Scaffold
 import me.phie.tawc.ui.buildChildScreen
@@ -50,7 +52,6 @@ import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 import java.io.File
-import java.io.IOException
 
 /**
  * Edit a launcher entry's TAWC-side fields, or make a shortcut. Writes
@@ -61,47 +62,65 @@ import java.io.IOException
  *   reset control beside it; a blank field falls back to the packaged
  *   value, shown as its hint. Toolbar Reset drops every override but
  *   hide state.
- * - A shortcut (the store's own entry) uses the same form, with
- *   Delete; Add entry makes a new one.
+ * - A shortcut is edited from its store record with the same form,
+ *   plus toolbar Delete (which also retires its home-screen pin). Add
+ *   entry makes a new one.
  *
- * Form: Command (required) + Name (blank = the command), environment
- * variables (exported at launch), Icon (a theme name or in-rootfs path
- * with a live preview, picked by [IconPickerActivity], or an image
- * imported by [IconImport] into the store), Terminal, and graphics
- * backend / pointer emulation overrides. Launched for result by
- * [AppsPane]; RESULT_OK = rescan.
+ * The widgets are read into an [EntryForm], which is the dirty check,
+ * the reset controls' state and what Save writes. Form: Command
+ * (required) + Name (blank = the command), environment variables
+ * (exported at launch), Icon (a theme name or in-rootfs path with a live
+ * preview, picked by [IconPickerActivity], or an image imported by
+ * [IconImport] into the store), Terminal, and graphics backend /
+ * pointer emulation overrides. Launched for result by [AppsPane];
+ * RESULT_OK = rescan. Rotation is a handled config change (manifest),
+ * so the form survives it.
  */
 class EntryEditorActivity : AppCompatActivity() {
 
+    /** What the form edits. */
+    private sealed interface Target {
+        /** A scanned entry: the fields become overrides of its packaged values. */
+        class Scanned(val entry: LauncherEntry) : Target
+
+        /** A store shortcut, or a new one when [id] is null. */
+        class Shortcut(val id: String?, val fields: EntryFields) : Target
+    }
+
     private val launcher by lazy { LauncherStore(this) }
+
+    private lateinit var scaffold: Scaffold
+    private lateinit var rootfs: File
+    private var installId = ""
+
+    private var target: Target? = null
+    private val scannedEntry: LauncherEntry? get() = (target as? Target.Scanned)?.entry
 
     private lateinit var nameField: EditText
     private lateinit var execField: EditText
     private lateinit var iconField: EditText
-    private lateinit var terminalCheckbox: CheckBox
-    private lateinit var saveButton: MaterialButton
     private lateinit var iconPreview: ImageView
-    private lateinit var rootfs: File
-    private lateinit var scaffold: Scaffold
-    private var installId = ""
+    private lateinit var terminalCheckbox: CheckBox
+    private lateinit var graphicsOverride: CheckBox
+    private lateinit var pointerOverride: CheckBox
+    private lateinit var envRows: LinearLayout
+    private val envFields = ArrayList<Pair<EditText, EditText>>()
+    private lateinit var saveButton: MaterialButton
 
-    /** The entry being edited; null for a new shortcut. */
-    private var entry: LauncherEntry? = null
-    private val scanned get() = entry?.source == LauncherEntry.Source.DESKTOP
-    /** A shortcut's stored name: the scan fills a blank one with the
-     *  command, which the form must not save back. */
-    private var shortcutName: String? = null
-
-    /** Per-field reset (scanned) / clear (shortcut icon) controls. */
+    /** Per-field reset (scanned) / clear-image (shortcut icon) controls. */
     private val resets = HashMap<String, View>()
 
-    /** Store icon file in effect (unchanged from load), or null. */
+    /** Icon state not held by a widget: the store file in effect and an
+     *  unsaved Load. The icon field is blank while either is set. */
     private var iconFile: String? = null
-    /** A Load not saved yet, and its preview copy. */
     private var pendingIcon: IconImport.Result? = null
-    private var pendingPreview: File? = null
-    /** Set while the code (not the user) changes [iconField]. */
-    private var settingIcon = false
+
+    /** The radio picks, meaningful while the override box is checked. */
+    private var graphicsChoice: GraphicsBackend = GraphicsBackend.DEFAULT
+    private var pointerChoice: PointerEmulation = PointerEmulation.DEFAULT
+
+    /** The form as loaded; the dirty check compares against it. */
+    private var initial: EntryForm? = null
 
     private val iconLoader by lazy {
         IconLoader(lifecycleScope, (PREVIEW_DP * resources.displayMetrics.density).toInt())
@@ -117,13 +136,6 @@ class EntryEditorActivity : AppCompatActivity() {
     private val loadIcon = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { importIcon(it) }
     }
-
-    private lateinit var envRows: LinearLayout
-    private val envFields = ArrayList<Pair<EditText, EditText>>()
-
-    /** The form's graphics / pointer emulation pick (null = global). */
-    private var graphicsPick: GraphicsBackend? = null
-    private var pointerPick: PointerEmulation? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -145,80 +157,64 @@ class EntryEditorActivity : AppCompatActivity() {
         }
         onBackPressedDispatcher.addCallback(this, discardGuard)
         setContentView(scaffold.root)
-        if (entryId == null) {
-            buildForm()
-            return
-        }
         lifecycleScope.launch {
-            val found = withContext(Dispatchers.IO) { LauncherEntry.find(applicationContext, inst, entryId) }
-            if (found == null) {
+            val loaded = withContext(Dispatchers.IO) { loadTarget(inst, entryId) }
+            if (loaded == null) {
                 Toast.makeText(this@EntryEditorActivity, R.string.shortcut_entry_gone, Toast.LENGTH_LONG).show()
                 finish()
                 return@launch
             }
-            if (found.source == LauncherEntry.Source.SHORTCUT) {
-                shortcutName = withContext(Dispatchers.IO) { launcher.load(installId)?.shortcuts?.get(entryId)?.name }
-            }
-            entry = found
-            buildForm()
+            target = loaded
+            buildForm(loaded)
         }
     }
 
-    override fun onDestroy() {
-        pendingPreview?.delete()
-        super.onDestroy()
+    /** [entryId]'s target: a store shortcut by its key, else the merged
+     *  scanned entry; null when gone. No id = a new shortcut. */
+    private fun loadTarget(inst: Installation, entryId: String?): Target? {
+        if (entryId == null) return Target.Shortcut(null, EntryFields())
+        launcher.load(installId)?.shortcuts?.get(entryId)?.let { return Target.Shortcut(entryId, it) }
+        return LauncherEntry.find(applicationContext, inst, entryId)
+            ?.takeIf { it.source == LauncherEntry.Source.DESKTOP }
+            ?.let { Target.Scanned(it) }
     }
 
-    private fun buildForm() {
-        val e = entry
-        graphicsPick = GraphicsBackend.fromKeyOrNull(e?.graphics)
-        pointerPick = PointerEmulation.fromKeyOrNull(e?.pointer)
-        iconFile = e?.iconFile?.ifEmpty { null }
+    private fun buildForm(t: Target) {
+        val initial = when (t) {
+            is Target.Scanned -> EntryForm.of(t.entry)
+            is Target.Shortcut -> EntryForm.of(t.fields, terminalDefault = t.id == null)
+        }
+        iconFile = initial.iconFile
         val pad = (16 * resources.displayMetrics.density).toInt()
 
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        execField = addField(form, "exec", R.string.editor_field_exec, e?.exec.orEmpty(), pad)
-        val name = if (e?.source == LauncherEntry.Source.SHORTCUT) shortcutName else e?.name
-        nameField = addField(form, "name", R.string.editor_field_name, name.orEmpty(), pad)
-        addEnvSection(form, e?.env.orEmpty().toList(), pad)
-        iconField = addIconRow(form, if (iconFile != null) "" else e?.icon.orEmpty(), pad)
-        // New shortcuts default to Terminal: hand-made entries are
-        // usually CLI programs.
+        execField = addField(form, "exec", R.string.editor_field_exec, initial.exec, pad)
+        nameField = addField(form, "name", R.string.editor_field_name, initial.name, pad)
+        addEnvSection(form, initial.env, pad)
+        iconField = addIconRow(form, initial.icon, pad)
         val terminalRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         terminalCheckbox = CheckBox(this).apply {
             text = getString(R.string.editor_field_terminal)
-            isChecked = e?.terminal ?: true
+            isChecked = initial.terminal
             // The fallback glyph follows Terminal.
             setOnCheckedChangeListener { _, _ -> refreshPreview(debounce = false); revalidate() }
         }
         terminalRow.addView(terminalCheckbox, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        addReset(terminalRow, "terminal") {
-            terminalCheckbox.isChecked = e?.packagedValue("terminal") == "true"
-        }
+        addReset(terminalRow, "terminal") { terminalCheckbox.isChecked = scannedEntry!!.packagedTerminal }
         form.addView(terminalRow, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
         // Unchecked = the global setting; checking starts from it.
-        var picked = graphicsPick ?: Settings.graphicsBackend
-        val graphicsGroup = graphicsBackendGroup(picked) { b ->
-            picked = b; graphicsPick = b; revalidate()
-        }
-        form.addView(
-            overrideBlock(R.string.editor_override_graphics, graphicsPick != null, graphicsGroup) { checked ->
-                graphicsPick = if (checked) picked else null
-            },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
+        graphicsChoice = initial.graphics ?: Settings.graphicsBackend
+        graphicsOverride = addOverrideBlock(
+            form, R.string.editor_override_graphics, initial.graphics != null, pad / 2,
+            graphicsBackendGroup(graphicsChoice) { graphicsChoice = it; revalidate() },
         )
-        var pointerPicked = pointerPick ?: Settings.pointerEmulation
-        val pointerGroup = pointerEmulationGroup(pointerPicked) { m ->
-            pointerPicked = m; pointerPick = m; revalidate()
-        }
-        form.addView(
-            overrideBlock(R.string.editor_override_pointer_emulation, pointerPick != null, pointerGroup) { checked ->
-                pointerPick = if (checked) pointerPicked else null
-            },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+        pointerChoice = initial.pointer ?: Settings.pointerEmulation
+        pointerOverride = addOverrideBlock(
+            form, R.string.editor_override_pointer_emulation, initial.pointer != null, pad,
+            pointerEmulationGroup(pointerChoice) { pointerChoice = it; revalidate() },
         )
 
         saveButton = primaryButton(getString(R.string.editor_save)) { save() }
@@ -227,8 +223,8 @@ class EntryEditorActivity : AppCompatActivity() {
         // button next to Save; both confirm. Tinted manually —
         // MaterialToolbar doesn't tint menu-item icons, and the vectors'
         // own fill is white.
-        val reset = scanned && e!!.overridden.isNotEmpty()
-        if (e?.source == LauncherEntry.Source.SHORTCUT || reset) {
+        val reset = t is Target.Scanned && t.entry.overridden.isNotEmpty()
+        if (reset || (t is Target.Shortcut && t.id != null)) {
             scaffold.toolbar.menu.add(getString(if (reset) R.string.editor_reset else R.string.editor_delete)).apply {
                 icon = AppCompatResources
                     .getDrawable(this@EntryEditorActivity, if (reset) R.drawable.ic_reset else R.drawable.ic_delete)
@@ -243,40 +239,56 @@ class EntryEditorActivity : AppCompatActivity() {
             ScrollView(this).apply { addView(form) },
             LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT),
         )
-        initialState = formState()
+        this.initial = initial
         revalidate()
         refreshPreview(debounce = false)
     }
 
-    /** Checkbox + [group], the group shown only while checked. One
-     *  block, so its bottom margin holds with the group hidden. */
-    private fun overrideBlock(labelRes: Int, checked: Boolean, group: View, onCheck: (Boolean) -> Unit): View {
+    /** The widgets' current values. */
+    private fun form() = EntryForm(
+        exec = execField.text.toString(),
+        name = nameField.text.toString(),
+        icon = iconField.text.toString(),
+        iconFile = iconFile,
+        pendingIcon = pendingIcon,
+        terminal = terminalCheckbox.isChecked,
+        env = envFields.map { (k, v) -> k.text.toString().trim() to v.text.toString() }
+            .filter { (k, v) -> k.isNotEmpty() || v.isNotEmpty() },
+        graphics = graphicsChoice.takeIf { graphicsOverride.isChecked },
+        pointer = pointerChoice.takeIf { pointerOverride.isChecked },
+    )
+
+    private fun isDirty() = initial.let { it != null && it != form() }
+
+    /** Checkbox + [group] (shown while checked) as one block, so its
+     *  bottom margin holds with the group hidden. Returns the checkbox. */
+    private fun addOverrideBlock(form: LinearLayout, labelRes: Int, checked: Boolean, margin: Int, group: View): CheckBox {
         group.visibility = if (checked) View.VISIBLE else View.GONE
+        val box = CheckBox(this).apply {
+            text = getString(labelRes)
+            isChecked = checked
+            setOnCheckedChangeListener { _, on ->
+                group.visibility = if (on) View.VISIBLE else View.GONE
+                revalidate()
+            }
+        }
         val block = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        block.addView(
-            CheckBox(this).apply {
-                text = getString(labelRes)
-                isChecked = checked
-                setOnCheckedChangeListener { _, on ->
-                    onCheck(on)
-                    revalidate()
-                    group.visibility = if (on) View.VISIBLE else View.GONE
-                }
-            },
-            verticalLp(WRAP_CONTENT, WRAP_CONTENT),
-        )
+        block.addView(box, verticalLp(WRAP_CONTENT, WRAP_CONTENT))
         block.addView(group, verticalLp(MATCH_PARENT, WRAP_CONTENT))
-        return block
+        form.addView(block, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = margin))
+        return box
     }
 
     /** A reset control for [field] at the end of [row], shown by
-     *  [revalidate] while the field differs from the packaged value. */
+     *  [revalidate] while the field differs from the packaged value.
+     *  Shortcuts get one for the icon only, clearing an image. */
     private fun addReset(row: LinearLayout, field: String, onClick: () -> Unit) {
-        val shortcutIcon = field == "icon" && !scanned
-        if (!scanned && !shortcutIcon) return
+        val scanned = target is Target.Scanned
+        val clearImage = field == "icon" && !scanned
+        if (!scanned && !clearImage) return
         val btn = plainIconButton(
-            if (shortcutIcon) R.drawable.ic_close else R.drawable.ic_reset,
-            getString(if (shortcutIcon) R.string.editor_icon_clear else R.string.editor_field_reset),
+            if (clearImage) R.drawable.ic_close else R.drawable.ic_reset,
+            getString(if (clearImage) R.string.editor_icon_clear else R.string.editor_field_reset),
         ) { onClick(); revalidate() }
         btn.visibility = View.GONE
         resets[field] = btn
@@ -288,6 +300,26 @@ class EntryEditorActivity : AppCompatActivity() {
             TextView(this).apply { text = getString(labelRes); textSize = 14f },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
         )
+    }
+
+    /** Label + single-line EditText with a reset control beside it. A
+     *  scanned entry's packaged value is the hint. */
+    private fun addField(form: LinearLayout, field: String, labelRes: Int, value: String, pad: Int): EditText {
+        label(form, labelRes)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val edit = EditText(this).apply {
+            setText(value)
+            isSingleLine = true
+            scannedEntry?.let { hint = it.packagedValue(field) }
+            doAfterTextChanged { revalidate() }
+        }
+        row.addView(edit, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        addReset(row, field) { edit.setText(scannedEntry!!.packagedValue(field)) }
+        form.addView(row, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        return edit
     }
 
     /**
@@ -319,8 +351,8 @@ class EntryEditorActivity : AppCompatActivity() {
             // As tall as the ✕, so the row doesn't jump when it shows.
             minHeight = (48 * resources.displayMetrics.density).toInt()
             doAfterTextChanged {
-                // Typing a name replaces an imported image.
-                if (!settingIcon && !it.isNullOrEmpty()) clearIconImport()
+                // A name replaces an image.
+                if (!it.isNullOrEmpty()) clearIconImage()
                 revalidate()
                 refreshPreview(debounce = true)
             }
@@ -339,8 +371,8 @@ class EntryEditorActivity : AppCompatActivity() {
         }
         fieldRow.addView(layout, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         addReset(fieldRow, "icon") {
-            clearIconImport()
-            setIcon(if (scanned) entry!!.packagedValue("icon") else "")
+            clearIconImage()
+            setIcon(scannedEntry?.packagedValue("icon").orEmpty())
         }
         column.addView(fieldRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -356,66 +388,56 @@ class EntryEditorActivity : AppCompatActivity() {
         return field
     }
 
-    private fun hasIconImage() = iconFile != null || pendingIcon != null
-
-    private fun clearIconImport() {
+    private fun clearIconImage() {
         iconFile = null
         pendingIcon = null
     }
 
-    /** Show what the launcher grid would draw: the imported image, else
+    /** Put [value] in the icon field (a non-empty one replaces an image). */
+    private fun setIcon(value: String) {
+        iconField.setText(value)
+        iconField.setSelection(value.length)
+        refreshPreview(debounce = false)
+    }
+
+    /** Show what the launcher grid would draw: the image in effect, else
      *  the resolved Icon value (blank on a scanned entry = packaged),
      *  else the same fallback glyph. */
     private fun refreshPreview(debounce: Boolean) {
         if (!::iconPreview.isInitialized || !::terminalCheckbox.isInitialized) return
         val fallback = if (terminalCheckbox.isChecked) R.drawable.ic_terminal_fallback else R.drawable.ic_app_fallback
-        val image = when {
-            pendingIcon != null -> pendingPreview?.path
-            iconFile != null -> File(launcher.iconsDir(installId), iconFile!!).path
-            else -> null
-        }
-        val value = iconField.text.toString().ifBlank { if (scanned) entry!!.packagedValue("icon") else "" }
+        val pending = pendingIcon
+        val stored = iconFile?.let { File(launcher.iconsDir(installId), it).path }
+        val value = iconField.text.toString().ifBlank { scannedEntry?.packagedValue("icon").orEmpty() }
         val rootfsPath = rootfs.absolutePath
         previewJob?.cancel()
         previewJob = lifecycleScope.launch {
             if (debounce) delay(PREVIEW_DEBOUNCE_MS)
-            val path = image ?: if (value.isBlank()) "" else withContext(Dispatchers.IO) {
+            if (pending != null) {
+                val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(pending.bytes, 0, pending.bytes.size) }
+                // A null tag makes an in-flight loader completion stale.
+                iconPreview.tag = null
+                if (bmp != null) iconPreview.setImageBitmap(bmp) else iconPreview.setImageResource(fallback)
+                return@launch
+            }
+            val path = stored ?: if (value.isBlank()) "" else withContext(Dispatchers.IO) {
                 runCatching { NativeBridge.nativeResolveIcon(rootfsPath, value) }.getOrDefault("")
             }
             iconLoader.load(path, iconPreview, fallback)
         }
     }
 
-    private fun setIcon(value: String) {
-        settingIcon = true
-        iconField.setText(value)
-        iconField.setSelection(value.length)
-        settingIcon = false
-        if (value.isNotEmpty()) clearIconImport()
-        refreshPreview(debounce = false)
-    }
-
     /** Read a picked image as PNG ([IconImport]); it lands in the store
      *  on Save. Failure leaves the icon as it was. */
     private fun importIcon(uri: Uri) {
         lifecycleScope.launch {
-            val scratch = File(cacheDir, "icon-import")
             val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    scratch.mkdirs()
-                    val r = IconImport.import(this@EntryEditorActivity, uri, scratch)
-                    val preview = File.createTempFile("preview", ".png", scratch).apply { writeBytes(r.bytes) }
-                    r to preview
-                }
+                runCatching { IconImport.import(this@EntryEditorActivity, uri, File(cacheDir, "icon-import")) }
             }
-            result.onSuccess { (r, preview) ->
-                pendingPreview?.delete()
+            result.onSuccess { r ->
                 pendingIcon = r
-                pendingPreview = preview
                 iconFile = null
-                settingIcon = true
                 iconField.setText("")
-                settingIcon = false
                 revalidate()
                 refreshPreview(debounce = false)
             }.onFailure {
@@ -428,26 +450,6 @@ class EntryEditorActivity : AppCompatActivity() {
         }
     }
 
-    /** Label + single-line EditText with a reset control beside it. A
-     *  scanned entry's packaged value is the hint. */
-    private fun addField(form: LinearLayout, field: String, labelRes: Int, value: String, pad: Int): EditText {
-        label(form, labelRes)
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val edit = EditText(this).apply {
-            setText(value)
-            isSingleLine = true
-            if (scanned) hint = entry!!.packagedValue(field)
-            doAfterTextChanged { revalidate() }
-        }
-        row.addView(edit, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        addReset(row, field) { edit.setText(entry?.packagedValue(field).orEmpty()) }
-        form.addView(row, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
-        return edit
-    }
-
     /**
      * ```
      * Environment variables
@@ -456,10 +458,7 @@ class EntryEditorActivity : AppCompatActivity() {
      * ```
      */
     private fun addEnvSection(form: LinearLayout, env: List<Pair<String, String>>, pad: Int) {
-        form.addView(
-            TextView(this).apply { text = getString(R.string.editor_field_env); textSize = 14f },
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
-        )
+        label(form, R.string.editor_field_env)
         envRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         form.addView(envRows, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         for ((k, v) in env) addEnvRow(k, v)
@@ -499,44 +498,49 @@ class EntryEditorActivity : AppCompatActivity() {
         return (key to value).also { envFields += it }
     }
 
-    /** Rows with a name; fully blank rows are ignored. */
-    private fun envVars(): List<Pair<String, String>> =
-        envFields.map { (k, v) -> k.text.toString().trim() to v.text.toString() }
-            .filter { (k, v) -> k.isNotEmpty() || v.isNotEmpty() }
-
-    /** Flag invalid names on their fields; true when all are valid. */
-    private fun validateEnv(): Boolean {
-        var ok = true
-        for ((k, v) in envFields) {
+    /** Flag [form]'s bad env names on their rows; true when none. */
+    private fun validateEnv(form: EntryForm): Boolean {
+        val bad = form.badEnvNames()
+        for ((k, _) in envFields) {
             val name = k.text.toString().trim()
-            val bad = (name.isNotEmpty() || v.text.isNotEmpty()) && !DesktopEntryFile.isValidEnvName(name)
-            k.error = if (bad) getString(R.string.editor_env_invalid) else null
-            if (bad) ok = false
+            k.error = when {
+                name !in bad -> null
+                DesktopEntryFile.isValidEnvName(name) -> getString(R.string.editor_env_duplicate)
+                else -> getString(R.string.editor_env_invalid)
+            }
         }
-        return ok
+        return bad.isEmpty()
     }
 
-    /** What [save] would persist, as typed; compared against [initialState]. */
-    private data class FormState(
-        val name: String,
-        val exec: String,
-        val icon: String,
-        val iconFile: String?,
-        val pendingIcon: IconImport.Result?,
-        val terminal: Boolean,
-        val env: List<Pair<String, String>>,
-        val graphics: GraphicsBackend?,
-        val pointer: PointerEmulation?,
-    )
-
-    private fun formState() = FormState(
-        nameField.text.toString(), execField.text.toString(), iconField.text.toString(), iconFile, pendingIcon,
-        terminalCheckbox.isChecked, envVars(), graphicsPick, pointerPick,
-    )
-
-    private var initialState: FormState? = null
-
-    private fun isDirty() = initialState.let { it != null && it != formState() }
+    /** Reset controls, hints, Save and the back guard from the form. */
+    private fun revalidate() {
+        if (!::saveButton.isInitialized) return
+        val form = form()
+        fun show(field: String, on: Boolean) {
+            resets[field]?.visibility = if (on) View.VISIBLE else View.GONE
+        }
+        when (val t = target!!) {
+            is Target.Scanned -> {
+                // Same computation as Save: a control shows while the
+                // field would be written as an override.
+                val o = form.overrides(t.entry, EntryFields())
+                show("name", o.name != null)
+                show("exec", o.exec != null)
+                show("icon", form.hasImage || o.icon != null)
+                show("terminal", o.terminal != null)
+                nameField.hint = t.entry.packagedValue("name")
+                iconField.hint = if (form.hasImage) getString(R.string.editor_icon_imported) else t.entry.packagedValue("icon")
+            }
+            is Target.Shortcut -> {
+                show("icon", form.hasImage)
+                nameField.hint = form.exec.trim()
+                iconField.hint = if (form.hasImage) getString(R.string.editor_icon_imported) else null
+            }
+        }
+        val envOk = validateEnv(form)
+        saveButton.isEnabled = (form.exec.isNotBlank() || target is Target.Scanned) && envOk
+        discardGuard.isEnabled = isDirty()
+    }
 
     /** Back/gesture interception, enabled only while there are unsaved
      *  changes so a clean form keeps the system's predictive back. */
@@ -555,7 +559,11 @@ class EntryEditorActivity : AppCompatActivity() {
             .setPositiveButton(R.string.editor_discard) { _, _ -> finish() }
             .setNegativeButton(R.string.editor_keep_editing, null)
             .show()
-        // Neutral Keep editing, as on the app's other confirms.
+        neutralNegative(dialog)
+    }
+
+    /** Neutral negative button, as on the app's other confirms. */
+    private fun neutralNegative(dialog: AlertDialog) {
         dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
             btn.setTextColor(MaterialColors.getColor(btn, com.google.android.material.R.attr.colorOnSurfaceVariant))
         }
@@ -566,121 +574,78 @@ class EntryEditorActivity : AppCompatActivity() {
         if (it.resourceId != 0) getColorStateList(it.resourceId) else ColorStateList.valueOf(it.data)
     }
 
-    /** A scanned entry's text override for [field]: the typed value
-     *  unless blank or the packaged one. */
-    private fun textOverride(field: String, value: String): String? =
-        value.trim().takeIf { it.isNotEmpty() && it != entry!!.packagedValue(field) }
-
-    private fun revalidate() {
-        if (!::saveButton.isInitialized) return
-        val exec = execField.text.toString().trim()
-        nameField.hint = if (scanned) entry!!.packagedValue("name") else exec
-        if (scanned) {
-            fun show(field: String, on: Boolean) {
-                resets[field]?.visibility = if (on) View.VISIBLE else View.GONE
-            }
-            show("name", textOverride("name", nameField.text.toString()) != null)
-            show("exec", textOverride("exec", execField.text.toString()) != null)
-            show("icon", hasIconImage() || textOverride("icon", iconField.text.toString()) != null)
-            show("terminal", terminalCheckbox.isChecked.toString() != entry!!.packagedValue("terminal"))
-        } else {
-            resets["icon"]?.visibility = if (hasIconImage()) View.VISIBLE else View.GONE
-        }
-        iconField.hint = when {
-            hasIconImage() -> getString(R.string.editor_icon_imported)
-            scanned -> entry!!.packagedValue("icon")
-            else -> null
-        }
-        val envOk = validateEnv()
-        saveButton.isEnabled = (exec.isNotEmpty() || scanned) && envOk
-        discardGuard.isEnabled = isDirty()
-    }
-
-    /** The form as store fields over [old] (kept: comment, hidden and
-     *  fields this build doesn't know). [newIcon] is the file a pending
-     *  Load was stored as. */
-    private fun fields(old: EntryFields, newIcon: String?): EntryFields {
-        val image = newIcon ?: iconFile
-        val iconText = iconField.text.toString().trim()
-        val env = envVars().toMap().takeIf { it.isNotEmpty() }
-        return if (scanned) {
-            val e = entry!!
-            old.copy(
-                name = textOverride("name", nameField.text.toString()),
-                exec = textOverride("exec", execField.text.toString()),
-                terminal = terminalCheckbox.isChecked.takeIf { it.toString() != e.packagedValue("terminal") },
-                icon = if (image != null) null else textOverride("icon", iconText),
-                iconFile = image,
-                env = env,
-                graphics = graphicsPick?.key,
-                pointer = pointerPick?.key,
-            )
-        } else {
-            old.copy(
-                name = nameField.text.toString().trim().ifEmpty { null },
-                exec = execField.text.toString().trim(),
-                terminal = terminalCheckbox.isChecked,
-                icon = if (image != null) null else iconText.ifEmpty { null },
-                iconFile = image,
-                env = env,
-                graphics = graphicsPick?.key,
-                pointer = pointerPick?.key,
-            )
-        }
-    }
-
     /** Write the form to the store: an override of a scanned entry, the
      *  shortcut being edited, or a new `tawc:app:` shortcut. */
     private fun save() {
-        val e = entry
-        val pending = pendingIcon
-        val name = nameField.text.toString().trim().ifEmpty { execField.text.toString().trim() }
-        val written = try {
-            launcher.update(installId, pending?.let { it.bytes to it.slug }) { store, newIcon ->
-                when {
-                    e == null -> store.withShortcut(store.newShortcutId(name), fields(EntryFields(), newIcon))
-                    scanned -> store.withOverride(e.id, fields(store.overrides[e.id] ?: EntryFields(), newIcon))
-                    else -> store.withShortcut(e.id, fields(store.shortcuts[e.id] ?: EntryFields(), newIcon))
+        val t = target ?: return
+        val form = form()
+        saveButton.isEnabled = false
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    launcher.update(installId, form.pendingIcon?.let { it.bytes to it.slug }) { store, newIcon ->
+                        when (t) {
+                            is Target.Scanned ->
+                                store.withOverride(t.entry.id, form.overrides(t.entry, store.overrides[t.entry.id] ?: EntryFields(), newIcon))
+                            is Target.Shortcut -> {
+                                val id = t.id ?: store.newShortcutId(form.name.trim().ifEmpty { form.exec.trim() })
+                                store.withShortcut(id, form.shortcut(store.shortcuts[id] ?: EntryFields(), newIcon))
+                            }
+                        }
+                    }
                 }
             }
-        } catch (ex: IOException) {
-            Toast.makeText(this, getString(R.string.editor_save_failed, ex.message), Toast.LENGTH_LONG).show()
-            return
+            val written = result.getOrNull()
+            if (written != null) {
+                setResult(RESULT_OK)
+                finish()
+                return@launch
+            }
+            val message = result.exceptionOrNull()?.let { getString(R.string.editor_save_failed, it.message) }
+                ?: getString(R.string.editor_delete_failed)
+            Toast.makeText(this@EntryEditorActivity, message, Toast.LENGTH_LONG).show()
+            revalidate()
         }
-        if (written == null) {
-            Toast.makeText(this, getString(R.string.editor_save_failed, installId), Toast.LENGTH_LONG).show()
-            return
-        }
-        setResult(RESULT_OK)
-        finish()
     }
 
     /** Reset (drop a scanned entry's overrides, keeping hide state) or
-     *  Delete (a shortcut). */
+     *  Delete (a shortcut, retiring its pin). */
     private fun confirmRemove(reset: Boolean) {
-        val e = entry ?: return
-        val label = nameField.text.toString().ifBlank { e.name.ifBlank { e.id } }
+        val id = when (val t = target) {
+            is Target.Scanned -> t.entry.id
+            is Target.Shortcut -> t.id ?: return
+            null -> return
+        }
+        val label = nameField.text.toString().ifBlank { scannedEntry?.name?.ifBlank { null } ?: execField.text.toString().ifBlank { id } }
         val dialog = AlertDialog.Builder(this)
             .setMessage(getString(if (reset) R.string.editor_reset_confirm else R.string.editor_delete_confirm, label))
-            .setPositiveButton(if (reset) R.string.editor_reset else R.string.editor_delete) { _, _ ->
-                val written = runCatching {
-                    launcher.update(installId) { store, _ ->
-                        if (reset) store.withoutOverrides(e.id) else store.withoutShortcut(e.id)
-                    }
-                }.getOrNull()
-                if (written == null) {
-                    Toast.makeText(this, R.string.editor_delete_failed, Toast.LENGTH_LONG).show()
-                    return@setPositiveButton
-                }
-                setResult(RESULT_OK)
-                finish()
-            }
+            .setPositiveButton(if (reset) R.string.editor_reset else R.string.editor_delete) { _, _ -> remove(id, reset) }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
-        // Red Delete, neutral Cancel, as on the app's other confirms.
+        // Red Delete, as on the app's other confirms.
         if (!reset) dialog.getButton(DialogInterface.BUTTON_POSITIVE)?.setTextColor(getColor(R.color.tawc_danger))
-        dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
-            btn.setTextColor(MaterialColors.getColor(btn, com.google.android.material.R.attr.colorOnSurfaceVariant))
+        neutralNegative(dialog)
+    }
+
+    private fun remove(id: String, reset: Boolean) {
+        lifecycleScope.launch {
+            val written = withContext(Dispatchers.IO) {
+                val w = runCatching {
+                    launcher.update(installId) { store, _ -> if (reset) store.withoutOverrides(id) else store.withoutShortcut(id) }
+                }.getOrNull()
+                if (w != null && !reset) {
+                    runCatching {
+                        EntryShortcuts.disablePin(applicationContext, installId, id, getString(R.string.shortcut_entry_deleted))
+                    }
+                }
+                w
+            }
+            if (written == null) {
+                Toast.makeText(this@EntryEditorActivity, R.string.editor_delete_failed, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            setResult(RESULT_OK)
+            finish()
         }
     }
 

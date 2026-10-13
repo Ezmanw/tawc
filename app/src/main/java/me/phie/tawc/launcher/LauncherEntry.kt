@@ -68,6 +68,9 @@ data class LauncherEntry(
         else -> ""
     }
 
+    /** The scanned `Terminal=` value. */
+    val packagedTerminal: Boolean get() = packagedValue("terminal") == "true"
+
     /**
      * App-provided entries. Ids carry a `tawc:` prefix no scanned id is
      * allowed to share (the scanner drops them), so hide state and

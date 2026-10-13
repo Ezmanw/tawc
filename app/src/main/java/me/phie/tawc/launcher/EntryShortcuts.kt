@@ -97,10 +97,20 @@ object EntryShortcuts {
      * later installed under the same id. Re-pinning after a reinstall
      * re-enables ([requestPin]).
      */
-    fun disablePinsFor(context: Context, installId: String, message: String) {
+    fun disablePinsFor(context: Context, installId: String, message: String) =
+        disablePins(context, message) { splitShortcutId(it)?.first == installId }
+
+    /** Disable [desktopId]'s pin in [installId], if there is one: a
+     *  deleted shortcut's pin shows [message] instead of a launch error.
+     *  Re-creating the entry under the same id and re-pinning re-enables
+     *  it ([requestPin]). */
+    fun disablePin(context: Context, installId: String, desktopId: String, message: String) =
+        disablePins(context, message) { it == shortcutId(installId, desktopId) }
+
+    private fun disablePins(context: Context, message: String, match: (id: String) -> Boolean) {
         val ids = ShortcutManagerCompat
             .getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_PINNED)
-            .mapNotNull { info -> info.id.takeIf { splitShortcutId(it)?.first == installId } }
+            .mapNotNull { info -> info.id.takeIf(match) }
         if (ids.isNotEmpty()) ShortcutManagerCompat.disableShortcuts(context, ids, message)
     }
 

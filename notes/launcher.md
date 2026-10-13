@@ -374,25 +374,45 @@ with `"migrated": 1`; idempotent.
 
 `EntryEditorActivity`, launched for result (RESULT_OK → rescan) from
 the per-entry Edit action and from "Add entry…" (a new shortcut). It
-writes only to the store; no method gate.
+writes only to the store; no method gate. Rotation is a handled config
+change (manifest, like the other activities), so the form survives it.
 
+- **Target**: the entry id is looked up in the store's `shortcuts`
+  first — a shortcut is edited from its store record (`EntryFields`),
+  not from the scan, whose name fallback to Exec must not be saved
+  back — else `LauncherEntry.find` gives the merged scanned entry.
+- **Form model**: the widgets are read into `EntryForm` (pure,
+  `EntryFormTest`), whose `overrides(entry, old)` / `shortcut(old)`
+  produce the store fields. The same object drives the dirty check
+  (compared with the form as loaded), the per-field reset controls (a ↺
+  shows exactly when `overrides` would write that field) and Save, so
+  the three can't disagree.
 - **Scanned entry**: each field shows its effective value with the
   packaged value as hint. A field that differs from the packaged one
-  is saved as an override and gets a ↺ reset beside its label; a
-  blank Name/Command falls back to the packaged value. Toolbar
-  **Reset** ("…to default?") drops every override for the id but
-  hide state.
-- **Shortcut**: the same form; Command required, Name blank = Command.
-  Toolbar **Delete**. New shortcuts default to Terminal checked
-  (hand-made entries are usually CLI programs).
+  (trimmed) is saved as an override; blank Name/Command/Icon means the
+  packaged value. Toolbar **Reset** ("…to default?") drops every
+  override for the id but hide state. `comment`, `hidden` and unknown
+  fields are kept across a save.
+- **Shortcut**: the same form; Command required, Name blank = Command
+  (left unset in the store). Toolbar **Delete** also disables the
+  entry's home-screen pin (`EntryShortcuts.disablePin`, "The entry was
+  deleted."); re-creating it under the same slug and re-pinning
+  re-enables it. New shortcuts default to Terminal checked (hand-made
+  entries are usually CLI programs); an existing one with no `terminal`
+  field shows unchecked, as it launches.
 - Form: Command, Name, Environment variables, Icon (below), Terminal,
-  Override graphics, Override pointer emulation. `comment` has no
-  field; an existing override of it is kept.
+  Override graphics, Override pointer emulation (checkbox + the shared
+  radio group; the pick is kept while unchecked, so re-checking
+  restores it).
 - **Environment variables** edit the store `env` directly. Rows are
   `[NAME] [value] ✕` plus a "+ Add" button; fully blank rows are
-  ignored, and an invalid name flags its field and disables Save. At
+  ignored. An invalid name, or a name used in two rows (the store is a
+  map, so one would be lost), flags its field and disables Save. At
   launch `EntryLauncher.envPrefix` exports them shell-quoted and skips
   invalid names.
+- Save, Reset and Delete run the store write on `Dispatchers.IO`; Save
+  is disabled while in flight. A null result (store gone or from a
+  newer app) and an `IOException` both toast and leave the form up.
 - Closing: the toolbar shows ✕ rather than ←, since leaving discards
   the form. With unsaved changes, ✕, Back and the back gesture ask
   "Discard changes?" first; the `OnBackPressedCallback` is enabled only
@@ -450,9 +470,10 @@ a name, or the label's ↺ (scanned) / ✕ (shortcut), drops the image.
   re-encoded as PNG; SVGs (MIME or `.svg` name, ≤ 1 MiB like the
   cache's cap) are rasterized once at 256² by
   `NativeBridge.nativeRasterizeIcon` (`icon_cache::rasterize_file`,
-  resvg with the cache's fences). Only PNG is stored, which keeps the
-  "`iconPath` is a decodable PNG" contract with no cache. The PNG is
-  held in memory (a preview copy in `cacheDir/icon-import/`) until
+  resvg with the cache's fences; `cacheDir/icon-import/` is its
+  scratch). Only PNG is stored, which keeps the "`iconPath` is a
+  decodable PNG" contract with no cache. The PNG is held in memory
+  (`EntryForm.pendingIcon`, previewed straight from the bytes) until
   Save's `update` stores it in `launcher/icons/` under the document's
   slug, so a cancelled form leaves nothing in the store. Name logic:
   `IconImportTest`.
@@ -492,9 +513,12 @@ trampoline).
   main TAWC task forward): gate install exists + state READY → scan →
   find by id → `EntryLauncher.launch`. Any gate failure shows
   `LaunchErrorActivity` instead of crashing, which is the whole
-  stale-pin story: uninstalling a distro leaves pins behind, and a
-  stale tap gets a clear error. (Optional follow-up if that annoys:
-  uninstall could `disableShortcuts` ids prefixed `"<installId>/"`.)
+  stale-pin story: an entry that vanished from the rootfs, or whose
+  install is mid-(un)install, gets a clear error on tap. Pins that are
+  known to be dead are disabled instead (greyed out, with a message on
+  tap): uninstall disables every pin of the install
+  (`disablePinsFor`, from `InstallationService`), and deleting a
+  shortcut in the editor disables its pin (`disablePin`).
   A built-in id resolves before the scan, straight to
   `EntryLauncher`, which sends it through the `.CommandLaunch` path.
 - A hidden entry still launches from its pin — hiding declutters the

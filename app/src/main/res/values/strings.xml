@@ -168,6 +168,7 @@
     <string name="shortcut_install_not_ready">Installation is %1$s.</string>
     <string name="shortcut_entry_gone">This app is no longer installed in the distro.</string>
     <string name="shortcut_distro_uninstalled">The distro was uninstalled.</string>
+    <string name="shortcut_entry_deleted">The entry was deleted.</string>
     <string name="launcher_builtin_unavailable">Not available for this install.</string>
     <string name="launcher_method_unavailable">Install method \'%1$s\' is not included in this build.</string>
     <string name="launcher_menu_add_entry">Add entry&#8230;</string>
@@ -193,6 +194,7 @@
     <string name="editor_env_name_hint">NAME</string>
     <string name="editor_env_value_hint">value</string>
     <string name="editor_env_invalid">Letters, digits and _ only, not starting with a digit</string>
+    <string name="editor_env_duplicate">Name used more than once</string>
     <string name="editor_close">Close</string>
     <string name="editor_discard_confirm">Discard changes?</string>
     <string name="editor_discard">Discard</string>
