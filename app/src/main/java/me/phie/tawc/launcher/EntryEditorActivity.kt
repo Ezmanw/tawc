@@ -88,6 +88,9 @@ class EntryEditorActivity : AppCompatActivity() {
     /** The entry being edited; null for a new shortcut. */
     private var entry: LauncherEntry? = null
     private val scanned get() = entry?.source == LauncherEntry.Source.DESKTOP
+    /** A shortcut's stored name: the scan fills a blank one with the
+     *  command, which the form must not save back. */
+    private var shortcutName: String? = null
 
     /** Per-field reset (scanned) / clear (shortcut icon) controls. */
     private val resets = HashMap<String, View>()
@@ -153,6 +156,9 @@ class EntryEditorActivity : AppCompatActivity() {
                 finish()
                 return@launch
             }
+            if (found.source == LauncherEntry.Source.SHORTCUT) {
+                shortcutName = withContext(Dispatchers.IO) { launcher.load(installId)?.shortcuts?.get(entryId)?.name }
+            }
             entry = found
             buildForm()
         }
@@ -172,7 +178,8 @@ class EntryEditorActivity : AppCompatActivity() {
 
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         execField = addField(form, "exec", R.string.editor_field_exec, e?.exec.orEmpty(), pad)
-        nameField = addField(form, "name", R.string.editor_field_name, e?.name.orEmpty(), pad)
+        val name = if (e?.source == LauncherEntry.Source.SHORTCUT) shortcutName else e?.name
+        nameField = addField(form, "name", R.string.editor_field_name, name.orEmpty(), pad)
         addEnvSection(form, e?.env.orEmpty().toList(), pad)
         iconField = addIconRow(form, if (iconFile != null) "" else e?.icon.orEmpty(), pad)
         // New shortcuts default to Terminal: hand-made entries are
