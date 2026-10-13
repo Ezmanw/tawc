@@ -253,9 +253,9 @@ build_and_deploy_test_apps() {
     source "$ROOT_DIR/scripts/lib/tawc-scratch.sh"
     APPS=(wayland-debug-app x11-debug-app eglx11-test)
     if [ "$BUILD_ABI" = "aarch64" ]; then
-        APPS+=(tawc-dri-test libhybris-tls-repro)
+        APPS+=(tawc-dri-test libhybris-tls-repro egl-second-connection)
     else
-        echo "=== Skipping tawc-dri-test, libhybris-tls-repro on $BUILD_ABI (need libhybris, aarch64-only) ==="
+        echo "=== Skipping tawc-dri-test, libhybris-tls-repro, egl-second-connection on $BUILD_ABI (need libhybris, aarch64-only) ==="
     fi
     for app in "${APPS[@]}"; do
         copy_test_app "$app"

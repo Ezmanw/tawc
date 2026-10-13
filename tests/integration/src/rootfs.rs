@@ -78,6 +78,12 @@ pub fn ensure_eglx11_test() -> io::Result<String> {
     memoized(&BIN, || check_rootfs_app("eglx11-test"))
 }
 
+/// `egl-second-connection` — EGL client with two `wl_display`s (tawc #29).
+pub fn ensure_egl_second_connection() -> io::Result<String> {
+    static BIN: OnceLock<io::Result<String>> = OnceLock::new();
+    memoized(&BIN, || check_rootfs_app("egl-second-connection"))
+}
+
 /// `libhybris-tls-repro` — regression test for the libhybris bionic
 /// linker's TLS-module unregister assertion (`linker_tls.cpp:93`).
 /// Returns the absolute path to the `libhybris-tls-repro` binary

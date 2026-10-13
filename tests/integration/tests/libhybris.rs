@@ -277,6 +277,43 @@ fn test_weston_simple_egl_renders_via_ahb() {
     assert_compositor_clean();
 }
 
+/// An EGL client with a second `wl_display` in the same process (Qt plus
+/// GDK from the gtk3 platform theme, tawc #29). libhybris shares one
+/// Android EGL display across connections, so windows on the second one
+/// used to be built on the first one's queue and abort in
+/// `wl_proxy_set_queue`. `egl-second-connection` renders on both
+/// connections and reconnects the second a few times.
+#[test]
+#[cfg_attr(
+    tawc_skip_libhybris_on_target,
+    ignore = "libhybris skipped on x86 device"
+)]
+fn test_egl_second_wl_display() {
+    tawc_integration::helpers::test_init();
+    let bin = rootfs::ensure_egl_second_connection().expect("egl-second-connection build");
+
+    let before = compositor::query_state(TIMEOUT).expect("query compositor state");
+    let output = adb::rootfs_run_with(BACKEND, &bin).expect("run egl-second-connection");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stderr.contains("egl-second-connection: OK"),
+        "egl-second-connection failed ({:?}). An abort with `Proxy and queue \
+         point to different wl_displays` means libhybris's wayland EGL \
+         platform is building secondary-connection windows on the first \
+         connection again (waylandws_CreateWindow).\n\
+         stdout: {stdout}\nstderr: {stderr}",
+        output.status.code()
+    );
+    let after = compositor::query_state(TIMEOUT).expect("query compositor state");
+    assert!(
+        after.wlegl_create_buffer_total > before.wlegl_create_buffer_total,
+        "egl-second-connection never created an android_wlegl buffer. \
+         before={before:?} after={after:?}"
+    );
+    assert_compositor_clean();
+}
+
 /// Vulkan client end-to-end: `vkcube` opens a Wayland surface via
 /// `vulkanplatform_wayland.so`, the swapchain hands out
 /// `ANativeWindowBuffer`s, and the compositor imports those as AHB

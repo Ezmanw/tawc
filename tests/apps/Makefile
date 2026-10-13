@@ -10,7 +10,7 @@ ifeq ($(origin CC),default)
 CC := $(or $(TAWC_AARCH64_CC),aarch64-linux-gnu-gcc)
 endif
 NDK_TRIPLE := aarch64-linux-android
-HYBRIS_APPS := tawc-dri-test libhybris-tls-repro
+HYBRIS_APPS := tawc-dri-test libhybris-tls-repro egl-second-connection
 else ifeq ($(ABI),x86_64)
 ifeq ($(origin CC),default)
 CC := $(or $(TAWC_X86_64_CC),$(shell command -v x86_64-linux-gnu-gcc >/dev/null 2>&1 && echo x86_64-linux-gnu-gcc || echo gcc))
@@ -53,6 +53,7 @@ eglx11-test: $(OUT_ROOT)/eglx11-test/eglx11-test
 tawc-dri-test: $(OUT_ROOT)/tawc-dri-test/tawc-dri-test
 libhybris-tls-repro: $(OUT_ROOT)/libhybris-tls-repro/libhybris-tls-repro $(OUT_ROOT)/libhybris-tls-repro/tls_lib.so $(OUT_ROOT)/libhybris-tls-repro/weak_lib.so
 adreno-struct-varying: $(OUT_ROOT)/adreno-struct-varying/adreno-struct-varying
+egl-second-connection: $(OUT_ROOT)/egl-second-connection/egl-second-connection
 
 $(OUT_ROOT)/%/:
 	mkdir -p "$@"
@@ -167,6 +168,23 @@ $(OUT_ROOT)/adreno-struct-varying/adreno-struct-varying: adreno-struct-varying/a
 		-L"$(SYSROOT)/usr/lib/hybris" -Wl,-rpath,/usr/lib/hybris \
 		-lwayland-egl -lwayland-client -lEGL -lGLESv2 -ldl \
 		$(LDFLAGS_SYSROOT) -Wall -Wextra
+
+$(OUT_ROOT)/egl-second-connection/xdg-shell-client-protocol.h: $(XDG_SHELL_XML) | sysroot $(OUT_ROOT)/egl-second-connection/
+	wayland-scanner client-header "$<" "$@"
+
+$(OUT_ROOT)/egl-second-connection/xdg-shell-protocol.c: $(XDG_SHELL_XML) | sysroot $(OUT_ROOT)/egl-second-connection/
+	wayland-scanner private-code "$<" "$@"
+
+$(OUT_ROOT)/egl-second-connection/egl-second-connection: egl-second-connection/egl-second-connection.c \
+		$(OUT_ROOT)/egl-second-connection/xdg-shell-client-protocol.h \
+		$(OUT_ROOT)/egl-second-connection/xdg-shell-protocol.c $(HYBRIS_COMMON)
+	$(CC) $(CFLAGS_SYSROOT) -I"$(OUT_ROOT)/egl-second-connection" -o "$@" \
+		egl-second-connection/egl-second-connection.c \
+		$(OUT_ROOT)/egl-second-connection/xdg-shell-protocol.c \
+		$$($(PC) --cflags wayland-client wayland-egl) \
+		-L"$(SYSROOT)/usr/lib/hybris" -Wl,-rpath,/usr/lib/hybris \
+		-lwayland-egl -lwayland-client -lEGL -lGLESv2 \
+		$(LDFLAGS_SYSROOT) -Wall -Wextra -Werror
 
 clean:
 	rm -rf "$(OUT_ROOT)"
