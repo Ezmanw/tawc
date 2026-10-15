@@ -1,7 +1,9 @@
 TAWC allows you to install a normal Linux distro on your phone, and run Linux applications. Both CLI and graphical programs are supported. Graphical apps may use X11 or Wayland and may be hardware accelerated in either case.
 
-Instead of a Linux desktop environment, Linux apps appear alongside Android apps in the Android app switcher. Touch support, Android keyboard support, clipboard integration and home screen shortcuts integrate Linux apps into Android.
+No root required: tawcroot, a faster alternative to proot, provides an environment like standard desktop Linux to programs without needing elevated Android privileges.
 
-Root is not required. tawcroot, a faster alternative to proot, provides the desktop Linux-like environment.
+Android integration: Linux apps appear alongside Android apps in the Android app switcher. Touch support, Android keyboard support, clipboard bridging and home screen shortcuts integrate Linux programs into Android, no separate Linux desktop needed.
 
-Accelerated desktop GL is not supported at this time. Only the graphics APIs the phone natively supports work (usually this means GLES and Vulkan). This is good enough for a lot of programs, but prevents some apps and most games from working unless you use CPU graphics.
+Hardware acceleration: for now, only the graphics APIs supported by the device. This usually means GLES and Vulkan. This is good enough for many programs, but some require desktop GL which is generally unsupported. Apps that don't work can be changed to use CPU graphics (slower, but wider compatibility) by editing their launcher shortcut.
+
+Remote access: SSH into your installed Linux distros via local network or an internet relay. sshyeet.com (or any compatible server) can be used as a relay. The remote access SSH server only runs when explicitly enabled.
