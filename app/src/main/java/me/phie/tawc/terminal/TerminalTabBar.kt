@@ -23,10 +23,9 @@ import me.phie.tawc.R
  * Top row of the home screen's [DistroHome]:
  * `[≡][⊞][ tabs… ][+] …… [⋮]`, or `[≡] Title …… [⋮]` while there are
  * no terminal tabs. ⊞ is the apps tab: first, an icon instead of a
- * label, no `×`, shown only alongside terminal tabs. The terminal tab strip scrolls
- * horizontally; `+` sits outside it, right after the last tab, shows
- * only while there are terminal tabs, and stays in place once the tabs
- * overflow. `≡` and `⋮` are pinned at the edges. Each terminal tab is
+ * label, no `×`, shown only alongside terminal tabs. ⊞, the terminal
+ * tabs and `+` scroll horizontally together; `≡` and `⋮` are pinned at
+ * the edges. Each terminal tab is
  * an ellipsized label plus a small `×` close button.
  *
  * Imperative custom view, no XML layout (app style). Terminal tab
@@ -52,7 +51,6 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
     private val appsTab: ImageButton
     private val titleView: TextView
     private val newTab: View
-    private val tabsRow: LinearLayout
     private val buttons = mutableListOf<ImageButton>()
 
     private val palette = Palette(
@@ -86,36 +84,27 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
             // Same glyph size as the other bar buttons in a wider cell.
             val h = dp(APPS_TAB_WIDTH_DP - NEW_TAB_WIDTH_DP) / 2 + dp(ICON_PAD_DP)
             setPadding(h, dp(ICON_PAD_DP) + dp(2), h, dp(ICON_PAD_DP) + dp(2))
-            visibility = GONE
         }
-        addView(appsTab, LayoutParams(dp(APPS_TAB_WIDTH_DP), MATCH_PARENT))
 
         strip = LinearLayout(context).apply { orientation = HORIZONTAL }
+        newTab = barButton(R.drawable.ic_add, R.string.terminal_new_tab) { onNewTabClicked() }
+        // ⊞ and `+` flank the strip inside the scroller so they scroll with
+        // the tabs; they stay siblings of `strip` so tab indices are unchanged.
+        val scrolled = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            addView(appsTab, LayoutParams(dp(APPS_TAB_WIDTH_DP), MATCH_PARENT))
+            addView(strip, LayoutParams(WRAP_CONTENT, MATCH_PARENT))
+            addView(newTab, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
+        }
         scroller = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
             // A tab scrolled half out reads as cut off, not as scrolled.
             isHorizontalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(FADE_DP))
-            addView(strip, LayoutParams(WRAP_CONTENT, MATCH_PARENT))
+            addView(scrolled, LayoutParams(WRAP_CONTENT, MATCH_PARENT))
         }
-        newTab = barButton(R.drawable.ic_add, R.string.terminal_new_tab) { onNewTabClicked() }
-            .apply { visibility = GONE }
-        tabsRow = object : LinearLayout(context) {
-            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                // Measure contents as wrap-content so `+` hugs the tabs; the
-                // weighted scroller gives back any overflow. Still claim the
-                // full width so `⋮` stays pinned right.
-                val width = MeasureSpec.getSize(widthMeasureSpec)
-                super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), heightMeasureSpec)
-                setMeasuredDimension(width, measuredHeight)
-            }
-        }.apply {
-            orientation = HORIZONTAL
-            addView(scroller, LayoutParams(WRAP_CONTENT, MATCH_PARENT, 1f))
-            addView(newTab, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
-        }
-        tabsRow.visibility = GONE
-        addView(tabsRow, LayoutParams(0, MATCH_PARENT, 1f))
+        scroller.visibility = GONE
+        addView(scroller, LayoutParams(0, MATCH_PARENT, 1f))
 
         lateinit var menu: View
         menu = barButton(R.drawable.ic_more_vert, R.string.home_menu_description) { onMenuClicked(menu) }
@@ -158,9 +147,7 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
     private fun updateTabsShown() {
         val tabs = tabCount() > 0
         titleView.visibility = if (tabs) GONE else VISIBLE
-        appsTab.visibility = if (tabs) VISIBLE else GONE
-        tabsRow.visibility = if (tabs) VISIBLE else GONE
-        newTab.visibility = if (tabs) VISIBLE else GONE
+        scroller.visibility = if (tabs) VISIBLE else GONE
     }
 
     private fun tabCount(): Int = strip.childCount
@@ -175,7 +162,7 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
         appsTab.background = if (apps) selectedBackground() else null
         appsTab.imageTintList = ColorStateList.valueOf(if (apps) palette.fgSelected else palette.fgUnselected)
         for (i in 0 until tabCount()) styleTab(i)
-        if (index in 0 until tabCount()) scrollIntoView(strip.getChildAt(index))
+        scrollIntoView(if (apps) appsTab else strip.getChildAt(index) ?: return)
     }
 
     private fun styleTab(i: Int) {
@@ -233,7 +220,9 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
         // Post: a freshly added/restyled tab has no geometry until the
         // next layout pass.
         scroller.post {
-            tab.requestRectangleOnScreen(Rect(0, 0, tab.width, tab.height), false)
+            // The last tab brings the `+` after it along.
+            val extra = if (tab === strip.getChildAt(tabCount() - 1)) newTab.width else 0
+            tab.requestRectangleOnScreen(Rect(0, 0, tab.width + extra, tab.height), false)
         }
     }
 
