@@ -1,0 +1,7 @@
+Fixes:
+
+- Works on kernels older than 4.11 (some Android 11 devices)
+- Long command lines no longer fail with E2BIG
+- Qt apps using the GTK3 theme no longer crash
+- Entry editor survives rotation, keeps shortcut names, blocks duplicate env vars, disables pins of deleted shortcuts, fixes first icon import
+- Terminal apps tab and + scroll with the tab strip

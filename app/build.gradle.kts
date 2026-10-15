@@ -113,7 +113,7 @@ android {
         minSdk = 29
         targetSdk = 36
         // Plain release counter, single source of truth; see notes/release.md.
-        versionName = "4"
+        versionName = "5"
         versionCode = versionName!!.toInt()
         ndk {
             abiFilters.addAll(tawcAbis)
