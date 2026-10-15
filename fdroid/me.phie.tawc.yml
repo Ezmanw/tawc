@@ -150,8 +150,11 @@ Builds:
     # takes whatever JDK the buildserver defaults to — currently 21, which
     # is what this build needs.
     scanignore:
-      - deps/libhybris/utils/generate_nfc/symbols
-      - deps/libxkbcommon/test/data/rules
+      - deps/libhybris/utils/generate_nfc/symbols/libnfc.so.txt
+      - deps/libhybris/utils/generate_nfc/symbols/libnfc_ndef.so.txt
+      - deps/libxkbcommon/test/data/rules/utf-16be_with_bom
+      - deps/libxkbcommon/test/data/rules/utf-16le_with_bom
+      - deps/libxkbcommon/test/data/rules/utf-32be
       - deps/smithay/Cargo.toml
       - deps/smithay/*/Cargo.toml
       - deps/rutabaga_gfx/Cargo.toml
