@@ -109,6 +109,38 @@ test(rev_rootfs_sibling_prefix_does_not_match)
 	test_int_eq(n, -2);  /* -ENOENT */
 }
 
+test(rev_rootfs_slash_covers_everything)
+{
+	/* `tawcroot -r /`: the rootfs prefix is "/" itself, so the byte
+	 * after it is never '/' — the boundary check must still match. */
+	tawcroot_proc_rewrite_ctx ctx = {
+		.rootfs_host_path     = "/",
+		.rootfs_host_path_len = 1,
+		.binds                = nullptr,
+		.n_binds              = 0,
+	};
+	char out[64];
+	long n = tawcroot_proc_reverse_translate_path(
+		&ctx, "/tmp/x", 6, out, sizeof out);
+	test_int_eq(n, 6);
+	test_str_eq(out, "/tmp/x");
+	n = tawcroot_proc_reverse_translate_path(&ctx, "/", 1, out,
+						 sizeof out);
+	test_int_eq(n, 1);
+	test_str_eq(out, "/");
+}
+
+test(host_path_under_boundaries)
+{
+	test_true(tawcroot_host_path_under("/a/b", 4, "/a", 2));
+	test_true(tawcroot_host_path_under("/a", 2, "/a", 2));
+	test_false(tawcroot_host_path_under("/ab", 3, "/a", 2));
+	test_false(tawcroot_host_path_under("/", 1, "/a", 2));
+	test_true(tawcroot_host_path_under("/tmp", 4, "/", 1));
+	test_true(tawcroot_host_path_under("/", 1, "/", 1));
+	test_false(tawcroot_host_path_under("/tmp", 4, "", 0));
+}
+
 test(rev_no_match_returns_enoent)
 {
 	tawcroot_proc_rewrite_ctx ctx = {

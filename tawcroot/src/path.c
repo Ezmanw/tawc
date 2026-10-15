@@ -167,19 +167,6 @@ static long write_guest_abs_suffix(char *out, size_t out_cap,
 	return (long)off;
 }
 
-/* True iff `host[0..n)` starts with `prefix[0..pl)` and the next byte (if
- * any) is `/` — i.e. the prefix matches at a component boundary. */
-static int host_prefix_match(const char *host, size_t n,
-                             const char *prefix, size_t pl)
-{
-	if (pl == 0) return 0;
-	if (pl > n)  return 0;
-	for (size_t i = 0; i < pl; i++)
-		if (host[i] != prefix[i]) return 0;
-	if (n > pl && host[pl] != '/') return 0;
-	return 1;
-}
-
 long tawcroot_host_path_to_guest_abs(const char *host, size_t n,
 				     char *out, size_t out_cap)
 {
@@ -189,14 +176,14 @@ long tawcroot_host_path_to_guest_abs(const char *host, size_t n,
 	const struct tawcroot_bind *best_bind = 0;
 	size_t best_pl = 0;
 
-	if (host_prefix_match(host, n, tawcroot_rootfs_host_path,
+	if (tawcroot_host_path_under(host, n, tawcroot_rootfs_host_path,
 	                      tawcroot_rootfs_host_path_len))
 		best_pl = tawcroot_rootfs_host_path_len;
 
 	for (size_t bi = 0; bi < tawcroot_n_binds; bi++) {
 		const struct tawcroot_bind *b = &tawcroot_binds[bi];
 		if (!b->active || b->src_len == 0) continue;
-		if (!host_prefix_match(host, n, b->src, b->src_len))
+		if (!tawcroot_host_path_under(host, n, b->src, b->src_len))
 			continue;
 		if (b->src_len > best_pl) {
 			best_bind = b;
@@ -225,7 +212,7 @@ int tawcroot_host_path_in_ro_bind(const char *host, size_t n)
 	int    best_ro = 0;
 	size_t best_pl = 0;
 
-	if (host_prefix_match(host, n, tawcroot_rootfs_host_path,
+	if (tawcroot_host_path_under(host, n, tawcroot_rootfs_host_path,
 	                      tawcroot_rootfs_host_path_len)) {
 		best_pl = tawcroot_rootfs_host_path_len;
 		best_ro = tawcroot_root_ro;
@@ -233,7 +220,7 @@ int tawcroot_host_path_in_ro_bind(const char *host, size_t n)
 	for (size_t bi = 0; bi < tawcroot_n_binds; bi++) {
 		const struct tawcroot_bind *b = &tawcroot_binds[bi];
 		if (!b->active || b->src_len == 0) continue;
-		if (!host_prefix_match(host, n, b->src, b->src_len)) continue;
+		if (!tawcroot_host_path_under(host, n, b->src, b->src_len)) continue;
 		if (b->src_len > best_pl) {
 			best_pl = b->src_len;
 			best_ro = b->read_only;

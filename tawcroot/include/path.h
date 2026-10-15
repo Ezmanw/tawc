@@ -26,6 +26,18 @@
  * the root. See notes/tawcroot/path-translation.md §"chroot emulation". */
 extern int tawcroot_rootfs_fd;
 
+/* True iff host[0..n) equals `prefix[0..pl)` or lies under it at a
+ * component boundary. A prefix of "/" (the `-r /` rootfs, or a bind of
+ * host /) covers every absolute path. pl == 0 never matches. */
+static inline int tawcroot_host_path_under(const char *host, size_t n,
+					   const char *prefix, size_t pl)
+{
+	if (pl == 0 || pl > n) return 0;
+	for (size_t i = 0; i < pl; i++)
+		if (host[i] != prefix[i]) return 0;
+	return n == pl || host[pl] == '/' || prefix[pl - 1] == '/';
+}
+
 /* Result of translating a guest path:
  *   base_fd  — caller passes this as `dirfd` to *at syscalls
  *   suffix   — caller passes this as `pathname` (relative to base_fd).

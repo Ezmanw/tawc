@@ -196,6 +196,10 @@ long tawcroot_path_binds_reanchor(struct tawcroot_bind *binds, size_t n_binds,
                                   const char *new_root, size_t new_len)
 {
 	if (!cur_root || !new_root || (n_binds && !binds)) return TAWC_EFAULT;
+	/* A root of "/" (`-r /`) composes as the empty prefix: host path
+	 * = "/" + dst, not "//" + dst. */
+	if (cur_len == 1 && cur_root[0] == '/') cur_len = 0;
+	if (new_len == 1 && new_root[0] == '/') new_len = 0;
 
 	long worst = 0;
 	for (size_t i = 0; i < n_binds; i++) {

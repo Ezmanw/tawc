@@ -34,9 +34,7 @@
 #if !defined(__ANDROID__)
 static cstr run_script(bool guest, const char *script, int *rc)
 {
-	/* Start from /: a host cwd outside the guest view would make the
-	 * guest shells' getcwd fail, which is unrelated noise here. */
-	VecStr v = c_init(vec_str, {"/usr/bin/env", "-C", "/"});
+	VecStr v = vec_str_init();
 	if (guest) {
 		vec_str_push(&v, TAWCROOT_ANDROID_FILTER_WRAP);
 		vec_str_push(&v, "--no-statx");

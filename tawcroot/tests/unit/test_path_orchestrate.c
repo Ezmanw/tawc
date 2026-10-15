@@ -621,6 +621,28 @@ test(reanchor_identity_keeps_all_binds_intact)
 	test_str_eq(binds[1].dst, "usr/lib");
 }
 
+test(reanchor_from_slash_root)
+{
+	/* `-r /`: the current root is "/" itself, which composes as the
+	 * empty prefix. chroot("/usr") keeps a bind under usr/; chroot
+	 * back to "/" keeps every bind. */
+	struct tawcroot_bind binds[2];
+	binds[0] = mk_bind_with_dst("usr/lib");
+	binds[1] = mk_bind_with_dst("opt");
+	long rv = tawcroot_path_binds_reanchor(binds, 2, "/", 1,
+					       "/usr", 4);
+	test_int_eq(rv, 0);
+	test_int_eq(binds[0].active, 1);
+	test_str_eq(binds[0].dst, "lib");
+	test_int_eq(binds[1].active, 0);
+
+	binds[0] = mk_bind_with_dst("usr/lib");
+	rv = tawcroot_path_binds_reanchor(binds, 1, "/", 1, "/", 1);
+	test_int_eq(rv, 0);
+	test_int_eq(binds[0].active, 1);
+	test_str_eq(binds[0].dst, "usr/lib");
+}
+
 test(reanchor_inside_chroot_strips_prefix)
 {
 	/* chroot to /data/rootfs/usr — bind originally at usr/lib re-

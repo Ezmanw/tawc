@@ -29,10 +29,8 @@
 static size_t match_host_prefix(const char *host_path, size_t host_len,
 				const char *prefix, size_t pl)
 {
-	if (pl == 0 || pl > host_len) return 0;
-	if (memcmp(host_path, prefix, pl) != 0) return 0;
-	if (host_len > pl && host_path[pl] != '/') return 0;
-	return pl;
+	return tawcroot_host_path_under(host_path, host_len, prefix, pl)
+		? pl : 0;
 }
 
 /* Build "/<dst>/<rest>" into `out`. `dst` and `rest` are bare (no

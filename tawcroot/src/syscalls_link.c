@@ -179,11 +179,9 @@ static long linkat_empty_path(struct tawcroot_path_scratch *scratch,
 	 * (fs_path_in_bind). The source side is judged by host path —
 	 * in-view but not under the rootfs prefix means a bind. */
 	int src_in_bind =
-		!(hn >= (long)tawcroot_rootfs_host_path_len &&
-		  memcmp(hostp, tawcroot_rootfs_host_path,
-			 tawcroot_rootfs_host_path_len) == 0 &&
-		  ((size_t)hn == tawcroot_rootfs_host_path_len ||
-		   hostp[tawcroot_rootfs_host_path_len] == '/'));
+		!tawcroot_host_path_under(hostp, (size_t)hn,
+					  tawcroot_rootfs_host_path,
+					  tawcroot_rootfs_host_path_len);
 	if (fs_path_in_bind(&tnew) || src_in_bind)
 		return link_fallback_v1(AT_FDCWD, hostp,
 					tnew.fd, tnew.path, rv);

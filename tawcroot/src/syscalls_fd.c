@@ -409,12 +409,9 @@ static long handle_getdents64(const tawcroot_syscall_args *args,
 	 * ran. Only when a store is open; without one the flip would cost
 	 * lstats for nothing. */
 	if (tawcroot_store_link_fd >= 0 &&
-	    tawcroot_rootfs_host_path_len > 0 &&
-	    (size_t)ln >= tawcroot_rootfs_host_path_len &&
-	    memcmp(proc_link, tawcroot_rootfs_host_path,
-	           tawcroot_rootfs_host_path_len) == 0 &&
-	    ((size_t)ln == tawcroot_rootfs_host_path_len ||
-	     proc_link[tawcroot_rootfs_host_path_len] == '/'))
+	    tawcroot_host_path_under(proc_link, (size_t)ln,
+	                             tawcroot_rootfs_host_path,
+	                             tawcroot_rootfs_host_path_len))
 		return tawcroot_dirent_filter_delink_types(buf, n);
 
 	if (!tawcroot_dirent_filter_is_proc_fd_link(proc_link, ln)) {
