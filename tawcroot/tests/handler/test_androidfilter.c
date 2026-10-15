@@ -246,6 +246,19 @@ register_dynamic_tests
 	REBUILD_FIXTURE_OR_RETURN();
 	steps_register_from_testhost_prefixed(c_sv("androidfilter_xperm"),
 	                                      prefix_xperm, args);
+
+	/* Pre-4.11 kernel shape (wmww/tawc#30): tawcroot's own statx
+	 * calls get ENOSYS and must fall back to newfstatat. Every stat
+	 * and statx check in the suite must still pass. */
+	const char *prefix_nostatx[] = {
+		TAWCROOT_ANDROID_FILTER_WRAP,
+		"--no-statx",
+		"--",
+		NULL,
+	};
+	REBUILD_FIXTURE_OR_RETURN();
+	steps_register_from_testhost_prefixed(c_sv("androidfilter_nostatx"),
+	                                      prefix_nostatx, args);
 #undef REBUILD_FIXTURE_OR_RETURN
 
 	rmrf(FAKE_ROOTFS);

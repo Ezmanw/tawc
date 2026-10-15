@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #include "hosted.h"
@@ -288,6 +289,120 @@ test(hosted_statx_mnt_id_fdinfo_parser_matches_kernel)
 		test_true(got.stx_mnt_id == want.stx_mnt_id);
 
 	test_int_eq(close(fd), 0);
+	th_teardown(&v);
+}
+
+/* --- statx without kernel statx (pre-4.11, wmww/tawc#30) ------------- */
+
+test(hosted_stat_to_statx_conversion)
+{
+	struct stat st;
+	memset(&st, 0, sizeof st);
+	st.st_dev = makedev(0x123, 0x45678);
+	st.st_rdev = makedev(0xabc, 0x12);
+	st.st_ino = 77;
+	st.st_mode = S_IFCHR | 0640;
+	st.st_nlink = 3;
+	st.st_uid = 1000;
+	st.st_gid = 1001;
+	st.st_size = 12345;
+	st.st_blksize = 4096;
+	st.st_blocks = 24;
+	st.st_atim.tv_sec = 100; st.st_atim.tv_nsec = 1;
+	st.st_mtim.tv_sec = 200; st.st_mtim.tv_nsec = 999999999;
+	st.st_ctim.tv_sec = -5;  st.st_ctim.tv_nsec = 3;
+
+	struct statx sx;
+	memset(&sx, 0xff, sizeof sx);
+	tawcroot_stat_to_statx(&st, &sx);
+	test_int_eq(sx.stx_mask, STATX_BASIC_STATS);
+	test_int_eq(sx.stx_dev_major, 0x123);
+	test_int_eq(sx.stx_dev_minor, 0x45678);
+	test_int_eq(sx.stx_rdev_major, 0xabc);
+	test_int_eq(sx.stx_rdev_minor, 0x12);
+	test_int_eq((long)sx.stx_ino, 77);
+	test_int_eq((int)sx.stx_mode, (int)(S_IFCHR | 0640));
+	test_int_eq(sx.stx_nlink, 3);
+	test_int_eq(sx.stx_uid, 1000);
+	test_int_eq(sx.stx_gid, 1001);
+	test_int_eq((long)sx.stx_size, 12345);
+	test_int_eq(sx.stx_blksize, 4096);
+	test_int_eq((long)sx.stx_blocks, 24);
+	test_int_eq((long)sx.stx_atime.tv_sec, 100);
+	test_int_eq(sx.stx_atime.tv_nsec, 1);
+	test_int_eq((long)sx.stx_mtime.tv_sec, 200);
+	test_int_eq(sx.stx_mtime.tv_nsec, 999999999);
+	test_int_eq((long)sx.stx_ctime.tv_sec, -5);
+	test_int_eq(sx.stx_ctime.tv_nsec, 3);
+	/* Fields fstatat can't supply stay zero. */
+	test_int_eq((long)sx.stx_btime.tv_sec, 0);
+	test_int_eq((long)sx.stx_attributes, 0);
+	test_int_eq((long)sx.stx_mnt_id, 0);
+}
+
+static int statx_calls;
+static bool statx_enosys_hook(long nr, const long args[6], long *ret)
+{
+	(void)args;
+	if (nr != TAWC_SYS_statx) return false;
+	statx_calls++;
+	*ret = TAWC_ENOSYS;
+	return true;
+}
+
+test(hosted_statx_enosys_falls_back_to_fstatat)
+{
+	th_view v;
+	th_setup(&v, "fs-nostatx");
+
+	struct stat st;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/etc/probe",
+			   &st, 0, 0, 0), 0);
+
+	statx_calls = 0;
+	tawcroot_test_raw_hook = statx_enosys_hook;
+
+	struct statx sx;
+	memset(&sx, 0xff, sizeof sx);
+	test_int_eq(th_sys(TAWC_SYS_statx, AT_FDCWD, "/etc/probe", 0,
+			   STATX_BASIC_STATS | STATX_MNT_ID | STATX_BTIME,
+			   &sx, 0), 0);
+	test_int_eq(tawcroot_no_statx, 1);
+	test_true((sx.stx_mask & STATX_BASIC_STATS) == STATX_BASIC_STATS);
+	test_false(sx.stx_mask & STATX_BTIME);
+	test_true(sx.stx_mask & STATX_MNT_ID);
+	test_true(sx.stx_mnt_id != 0);
+	test_int_eq((long)sx.stx_ino, (long)st.st_ino);
+	test_int_eq((long)sx.stx_size, (long)st.st_size);
+	test_int_eq(sx.stx_uid, 0);
+
+	/* The latch skips the raw statx from then on. */
+	int seen = statx_calls;
+	test_int_eq(th_sys(TAWC_SYS_statx, AT_FDCWD, "/lib",
+			   AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &sx, 0),
+		    0);
+	test_true(S_ISLNK(sx.stx_mode));
+	test_int_eq(statx_calls, seen);
+
+	/* Kernel-shaped errors survive the fallback. */
+	test_int_eq(th_sys(TAWC_SYS_statx, AT_FDCWD, "/etc/missing", 0,
+			   STATX_BASIC_STATS, &sx, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_statx, AT_FDCWD, "/etc/probe",
+			   AT_STATX_SYNC_TYPE, STATX_BASIC_STATS, &sx, 0),
+		    TAWC_EINVAL);
+	test_int_eq(th_sys(TAWC_SYS_statx, AT_FDCWD, "/etc/probe",
+			   AT_REMOVEDIR, STATX_BASIC_STATS, &sx, 0),
+		    TAWC_EINVAL);
+
+	/* AT_EMPTY_PATH on an fd. */
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(th_sys(TAWC_SYS_statx, fd, "", AT_EMPTY_PATH,
+			   STATX_BASIC_STATS, &sx, 0), 0);
+	test_int_eq((long)sx.stx_ino, (long)st.st_ino);
+	test_int_eq(close((int)fd), 0);
+
 	th_teardown(&v);
 }
 

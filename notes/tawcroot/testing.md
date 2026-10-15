@@ -215,6 +215,12 @@ observation. Only `src/arch/*.S` stays freestanding-only.
   wrapper can launch the child). `close_range` is trapped: Android
   policies below API 34 trap NR 436, so trapping it here is what
   proves the handler emulates instead of re-emitting (wmww/tawc#14).
+  `--no-statx` (the `androidfilter_nostatx` module) instead
+  `RET_ERRNO|ENOSYS`es statx, the pre-4.11 kernel shape: guest statx
+  still TRAPs (TRAP outranks ERRNO) and only tawcroot's own raw statx
+  sees `ENOSYS`. `tests/integration/test_prod_no_statx.c` runs
+  host `tawcroot -r /` under it and diffs an exec/stat script against
+  a native run (wmww/tawc#30).
   Found one bug: the testhost's `prod_rootfs_init`
   ordered `probe_openat2` before `install_handler`, mirroring the same
   bug fixed in production main.c months ago. See

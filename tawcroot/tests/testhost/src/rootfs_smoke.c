@@ -2052,6 +2052,89 @@ static int test_statx_fake_root_decoration(void)
 	return fails;
 }
 
+/* statx shapes that must hold on every kernel — the androidfilter
+ * no-statx suite reruns them with tawcroot's own statx ENOSYS'd, so
+ * every one then rides the newfstatat fallback (wmww/tawc#30). */
+static int test_statx_shapes(void)
+{
+	int fails = 0;
+	struct statx sx;
+	struct stat st;
+	long rv, sr;
+	unsigned int basic = 0x7ff; /* STATX_BASIC_STATS */
+
+	/* statx and fstatat agree on the same file. */
+	INLINE_SYS6(TAWC_SYS_statx, AT_FDCWD, "/etc/probe", 0, basic,
+		    &sx, 0, rv);
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/etc/probe", &st, 0,
+		    0, 0, sr);
+	fails += tawc_io_step("statx(/etc/probe) matches fstatat",
+		rv == 0 && sr == 0 &&
+		(sx.stx_mask & basic) == basic &&
+		sx.stx_size == (uint64_t)st.st_size &&
+		sx.stx_ino == (uint64_t)st.st_ino &&
+		sx.stx_mode == (uint16_t)st.st_mode &&
+		sx.stx_nlink == (uint32_t)st.st_nlink &&
+		TAWC_MKDEV(sx.stx_dev_major, sx.stx_dev_minor) ==
+			(unsigned long)st.st_dev &&
+		sx.stx_mtime.tv_sec == (int64_t)st.st_mtim.tv_sec &&
+		sx.stx_mtime.tv_nsec == (uint32_t)st.st_mtim.tv_nsec);
+
+	/* AT_EMPTY_PATH on an fd. */
+	long fd = inline_openat(AT_FDCWD, "/etc/probe", O_RDONLY, 0);
+	if (fd >= 0) {
+		INLINE_SYS6(TAWC_SYS_statx, fd, "", AT_EMPTY_PATH, basic,
+			    &sx, 0, rv);
+		fails += tawc_io_step("statx(fd, \"\", AT_EMPTY_PATH) -> file",
+			rv == 0 && S_ISREG(sx.stx_mode) &&
+			sx.stx_size == (uint64_t)st.st_size);
+		tawc_close((int)fd);
+	} else {
+		fails += tawc_io_step("open /etc/probe for statx", 0);
+	}
+
+	/* NOFOLLOW keeps the leaf symlink. */
+	INLINE_SYS6(TAWC_SYS_statx, AT_FDCWD, "/altpath",
+		    AT_SYMLINK_NOFOLLOW, basic, &sx, 0, rv);
+	fails += tawc_io_step("statx(symlink, NOFOLLOW) -> S_IFLNK",
+		rv == 0 && S_ISLNK(sx.stx_mode));
+
+	/* Mount id is filled on request, from the kernel or fdinfo. */
+	INLINE_SYS6(TAWC_SYS_statx, AT_FDCWD, "/etc/probe", 0,
+		    basic | STATX_MNT_ID, &sx, 0, rv);
+	fails += tawc_io_step("statx(STATX_MNT_ID) -> mount id filled",
+		rv == 0 && (sx.stx_mask & STATX_MNT_ID) &&
+		sx.stx_mnt_id != 0);
+
+	/* /dev/shm entry (memfd-backed). */
+	fd = inline_openat(AT_FDCWD, "/dev/shm/tawcroot-statx",
+			   O_RDWR | O_CREAT, 0600);
+	if (fd >= 0) {
+		INLINE_SYS6(TAWC_SYS_statx, AT_FDCWD,
+			    "/dev/shm/tawcroot-statx", 0, basic, &sx, 0, rv);
+		fails += tawc_io_step("statx(/dev/shm/<name>) -> file",
+			rv == 0 && S_ISREG(sx.stx_mode) && sx.stx_uid == 0);
+		tawc_close((int)fd);
+		INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD,
+			    "/dev/shm/tawcroot-statx", 0, 0, 0, 0, rv);
+	} else {
+		fails += tawc_io_step("create /dev/shm entry for statx", 0);
+	}
+
+	/* /proc shadow entry. */
+	INLINE_SYS6(TAWC_SYS_statx, AT_FDCWD, "/proc/uptime", 0, basic,
+		    &sx, 0, rv);
+	fails += tawc_io_step("statx(/proc/uptime shadow) -> file",
+		rv == 0 && S_ISREG(sx.stx_mode));
+
+	/* Both sync-type bits at once is the kernel's EINVAL. */
+	INLINE_SYS6(TAWC_SYS_statx, AT_FDCWD, "/etc/probe",
+		    AT_STATX_SYNC_TYPE, basic, &sx, 0, rv);
+	fails += tawc_io_step("statx(AT_STATX_SYNC_TYPE) -> EINVAL",
+		rv == TAWC_EINVAL);
+	return fails;
+}
+
 /* linkat -- happy path. /etc/probe -> /etc/probe-link2. We use AT_FDCWD
  * as both dirfds; the handler translates each operand. Hard link
  * should succeed inside the rootfs. */
@@ -5284,6 +5367,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_root_op_errno_shapes();
 	fails += test_fstatat_at_empty_path();
 	fails += test_statx_fake_root_decoration();
+	fails += test_statx_shapes();
 	fails += test_linkat_happy_path();
 	fails += test_linkat_publish_then_unlink_source();
 	fails += test_renameat2_happy_path();

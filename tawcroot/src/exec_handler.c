@@ -18,6 +18,7 @@
 #include "proc_shadow.h"
 #include "raw_sys.h"
 #include "shm.h"
+#include "syscalls_fs.h"
 #include "tawc_uapi.h"
 #include "usercopy.h"
 
@@ -57,9 +58,8 @@ static size_t arg_budget(void)
 static long probe_check_executable(int fd)
 {
 	struct statx stx;
-	long sr = TAWC_RAW(TAWC_SYS_statx, fd, (long)"",
-	                   AT_EMPTY_PATH, STATX_TYPE | STATX_MODE,
-	                   (long)&stx, 0);
+	long sr = tawc_statx(fd, "", AT_EMPTY_PATH, STATX_TYPE | STATX_MODE,
+	                     &stx);
 	if (sr < 0) return sr;
 	if (S_ISDIR(stx.stx_mode)) return TAWC_EISDIR;
 	if (!S_ISREG(stx.stx_mode)) return TAWC_EACCES;

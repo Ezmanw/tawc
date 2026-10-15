@@ -9,7 +9,7 @@
  *
  * Usage:
  *
- *   wrap [--include-legacy-x86_64] [--xperm-tcgets2] -- <child> [args...]
+ *   wrap [--include-legacy-x86_64] [--xperm-tcgets2] [--no-statx] -- <child> [args...]
  *
  * Installs PR_SET_NO_NEW_PRIVS + a seccomp BPF filter, then execve()s the
  * child with the original args. The filter inherits across exec, so the
@@ -51,6 +51,10 @@
  *     is a RET_ERRNO action, applied unconditionally — there's no
  *     handler in the wrapper, the child just sees -EACCES from
  *     userspace's POV until tawcroot's handler intervenes.
+ *   - With --no-statx: RET_ERRNO|ENOSYS for statx, the shape of a
+ *     pre-4.11 kernel (wmww/tawc#30). tawcroot's own filter TRAPs guest
+ *     statx and TRAP outranks ERRNO, so guest calls still reach the
+ *     handler; only tawcroot's raw statx sees ENOSYS.
  *
  * Deliberately NOT trapped:
  *
@@ -94,6 +98,7 @@
 # define WRAP_NR_clone3       435
 # define WRAP_NR_close_range  436
 # define WRAP_NR_ioctl         29
+# define WRAP_NR_statx        291
 #elif defined(__x86_64__)
 # define WRAP_AUDIT_ARCH      AUDIT_ARCH_X86_64
 # define WRAP_NR_openat2      437
@@ -101,6 +106,7 @@
 # define WRAP_NR_clone3       435
 # define WRAP_NR_close_range  436
 # define WRAP_NR_ioctl         16
+# define WRAP_NR_statx        332
 /* Legacy lp64-x86_64 RET_TRAP set (Android allows these only for lp32).
  * This is a MODELED SUBSET, not the full list — the authoritative set
  * is the empirical prod-env audit (notes/tawcroot/status.md), which
@@ -141,7 +147,7 @@ static long sys_seccomp(unsigned int op, unsigned int flags, void *args)
 #define WRAP_TCSETSF2  0x402C542DU
 
 static bool install_filter(bool include_legacy_x86_64,
-                           bool xperm_tcgets2)
+                           bool xperm_tcgets2, bool no_statx)
 {
 	/* Cap mirrors the production trap_nrs[256] in main.c. The current
 	 * trap set fits comfortably in 64 slots, but the array+guard pair
@@ -281,6 +287,13 @@ static bool install_filter(bool include_legacy_x86_64,
 		prog[i++] = BPF_S(BPF_RET | BPF_K, eacces);
 	}
 
+	if (no_statx) {
+		prog[i++] = BPF_J(BPF_JMP | BPF_JEQ | BPF_K,
+		                  (uint32_t)WRAP_NR_statx, 0, 1);
+		prog[i++] = BPF_S(BPF_RET | BPF_K,
+		                  SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA));
+	}
+
 	for (size_t t = 0; t < n; t++) {
 		prog[i++] = BPF_J(BPF_JMP | BPF_JEQ | BPF_K,
 		                  (uint32_t)trap_nrs[t], 0, 1);
@@ -304,12 +317,15 @@ int main(int argc, char **argv)
 {
 	bool include_legacy = false;
 	bool xperm_tcgets2 = false;
+	bool no_statx = false;
 	int i = 1;
 	for (; i < argc; i++) {
 		if (strcmp(argv[i], "--include-legacy-x86_64") == 0) {
 			include_legacy = true;
 		} else if (strcmp(argv[i], "--xperm-tcgets2") == 0) {
 			xperm_tcgets2 = true;
+		} else if (strcmp(argv[i], "--no-statx") == 0) {
+			no_statx = true;
 		} else if (strcmp(argv[i], "--") == 0) {
 			i++;
 			break;
@@ -320,7 +336,7 @@ int main(int argc, char **argv)
 	if (i >= argc) {
 		fprintf(stderr,
 		        "usage: wrap [--include-legacy-x86_64] "
-		        "[--xperm-tcgets2] [--] <child> [args...]\n");
+		        "[--xperm-tcgets2] [--no-statx] [--] <child> [args...]\n");
 		return 2;
 	}
 
@@ -329,7 +345,7 @@ int main(int argc, char **argv)
 		        strerror(errno));
 		return 2;
 	}
-	if (!install_filter(include_legacy, xperm_tcgets2)) return 2;
+	if (!install_filter(include_legacy, xperm_tcgets2, no_statx)) return 2;
 
 	execv(argv[i], &argv[i]);
 	/* execv only returns on failure. */

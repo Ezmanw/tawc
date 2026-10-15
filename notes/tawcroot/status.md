@@ -157,8 +157,8 @@ not a to-do list** — live work lives in `issues/` and `plans/`.
      into our text/data. Use `MAP_FIXED_NOREPLACE` for all
      explicit placements — it errors cleanly (`-EEXIST`) on
      overlap instead of silently clobbering.
-     `MAP_FIXED_NOREPLACE` is available on all relevant Android
-     kernels (introduced in 4.17; Android 11+ minimum is 5.4).
+     `MAP_FIXED_NOREPLACE` is 4.17+; older kernels ignore it, so
+     `loader_map.c` checks the placed address and fails cleanly.
 
    **Implementation policy: write it ourselves with references.**
    We do not vendor proot's loader (GPLv2 — would license-encumber
@@ -325,6 +325,19 @@ covered by unit/hosted/smoke tests.)
   leaves the kernel's answer untouched. Zero cost on ≥5.8 kernels.
   `MNT_ID_UNIQUE` itself (kernel 6.8) is not synthesized — nothing
   needs it and fdinfo has no unique id to parse.
+- **Pre-4.11 kernels: `statx` is emulated from `newfstatat`**
+  (wmww/tawc#30; many Android 11 phones run 4.9). Every statx
+  tawcroot issues goes through `tawc_statx` (syscalls_stat.c): on the
+  first `ENOSYS` it latches a per-image flag and converts
+  `newfstatat` results instead. Guests then see `STATX_BASIC_STATS`
+  only — no btime, attributes or attribute mask — plus the fdinfo
+  mount id above. Before this, the exec probe's statx leaked
+  `ENOSYS` into every `execve`. Covered by the `androidfilter_nostatx`
+  suite and `test_prod_no_statx` (host). Every other raw syscall
+  tawcroot issues is ≤3.19 or has its own ENOSYS path;
+  `SECCOMP_RET_KILL_PROCESS` (4.14) degrades to kill-thread on older
+  kernels, only on the arch-mismatch path. Full Android 11 + 4.9
+  support is untested: no such device is available.
 - **Guest seccomp installs are fake-accepted, not applied.**
   `seccomp(SET_MODE_STRICT|FILTER)` / `prctl(PR_SET_SECCOMP)` validate
   arguments with the kernel's exact EFAULT/EINVAL shapes, install

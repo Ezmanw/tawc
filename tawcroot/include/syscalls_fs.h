@@ -18,7 +18,23 @@ void tawcroot_fs_register(void);
  * fds, which RO binds never grant). */
 tawcroot_path_intent tawcroot_openat_intent(int flags);
 
+struct stat;
 struct statx;
+
+/* statx(2) with raw-syscall semantics on every kernel. statx is 4.11+
+ * (many Android 11 phones run 4.9): the first ENOSYS latches
+ * tawcroot_no_statx and from then on the call is newfstatat +
+ * tawcroot_stat_to_statx — basic stats only, no btime, mount id or
+ * attributes. The latch is per process image, so it is re-learned
+ * after every exec. Use this, never a raw TAWC_SYS_statx. */
+long tawc_statx(int dirfd, const char *path, int flags,
+		unsigned int mask, struct statx *out);
+extern int tawcroot_no_statx;
+
+/* The kernel's cp_statx shape from a newfstatat result: struct zeroed,
+ * stx_mask = STATX_BASIC_STATS, st_dev/st_rdev split into major/minor.
+ * Pure; unit-tested. */
+void tawcroot_stat_to_statx(const struct stat *st, struct statx *sx);
 
 /* STATX_MNT_ID emulation for pre-5.8 kernels (see syscalls_stat.c for
  * the full story): when `req_mask` asks for a mount id and `sx` lacks

@@ -17,6 +17,7 @@
 #include "path.h"
 #include "rescue.h"
 #include "shm.h"
+#include "syscalls_fs.h"
 #include "syscalls_socket.h"
 #include "usercopy.h"
 
@@ -112,6 +113,7 @@ const char *th_view_add_bind_impl(TestCtx *test_ctx, th_view *v,
 void th_view_teardown_impl(TestCtx *test_ctx, th_view *v)
 {
 	tawcroot_test_raw_hook = NULL;
+	tawcroot_no_statx = 0;
 
 	/* Snapshot the bind count before clearing so the bind src trees
 	 * can be removed below. Close every fd the view reserved (rootfs +
