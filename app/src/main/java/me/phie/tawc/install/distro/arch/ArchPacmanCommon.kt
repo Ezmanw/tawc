@@ -562,9 +562,10 @@ PACMAN_EOF
      * Common base package set for every Arch flavour. Kept minimal —
      * `inetutils` for `hostname` (shell hooks like wezterm's fall
      * back to `hostnamectl` without it, which spams systemd errors
-     * in our systemd-less rootfs).
+     * in our systemd-less rootfs). `ttf-dejavu`: fontconfig ships no
+     * font, and apps like foot exit without one.
      * Test/dev subsystems install their own deps via
      * `scripts/run-integration-tests.sh`.
      */
-    val DEFAULT_BASE_PACKAGES: List<String> = listOf("inetutils")
+    val DEFAULT_BASE_PACKAGES: List<String> = listOf("inetutils", "ttf-dejavu")
 }

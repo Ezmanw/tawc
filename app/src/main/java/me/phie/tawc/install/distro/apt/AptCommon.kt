@@ -46,9 +46,11 @@ internal object AptCommon {
     // fails with EUNATCH when statx() lacks STATX_MNT_ID (kernel <5.8, e.g.
     // 5.4 phone kernels). The rootfs is systemd-less by design anyway, so
     // seed the standalone providers to steer the resolver away from it.
+    // fonts-dejavu-core: a font, without which apps like foot exit.
     val DEFAULT_BASE_PACKAGES: List<String> = listOf(
         "ca-certificates",
         "dbus-x11",
+        "fonts-dejavu-core",
         "libwayland-client0",
         "libwayland-server0",
         "systemd-standalone-sysusers",

@@ -294,7 +294,8 @@ internal object VoidCommon {
     // inetutils-hostname provides `hostname` (Void splits inetutils
     // into per-tool subpackages); without it shell hooks fall back to
     // `hostnamectl`, which errors in our systemd-less rootfs.
-    val DEFAULT_BASE_PACKAGES: List<String> = listOf("inetutils-hostname")
+    // dejavu-fonts-ttf: a font, without which apps like foot exit.
+    val DEFAULT_BASE_PACKAGES: List<String> = listOf("inetutils-hostname", "dejavu-fonts-ttf")
 
     /**
      * Wrap [log] to drop xbps's per-package noise. xbps writes

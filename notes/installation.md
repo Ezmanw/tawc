@@ -390,7 +390,8 @@ replaces them and rejoins at stage 5.
 7. **PKG_INSTALL** — `pacman -Syyu --needed --noconfirm <basePackages>`
    followed by a package-cache clear (a `tawc` pacman hook drops the
    cached `.pkg.tar.*`). The base set is deliberately **minimal**:
-   currently just `inetutils` (for `hostname`); see
+   currently just `inetutils` (for `hostname`) and `ttf-dejavu` (a
+   font; foot and others exit without one); see
    `ArchPacmanCommon.DEFAULT_BASE_PACKAGES`. **No toolchain or desktop
    stack is installed at bootstrap** — the guest ships without
    `base-devel`/`gcc`/`make`, wayland, gtk, weston, autotools, etc.;
