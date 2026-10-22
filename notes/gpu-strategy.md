@@ -98,9 +98,22 @@ Loading chain in a client:
 App (glibc-linked)
   -> dlopen("libEGL.so")  -- finds OUR wrapper (glibc-linked, in LD_LIBRARY_PATH)
     -> our wrapper calls libhybris
-      -> libhybris loads /vendor/lib64/egl/libEGL_<vendor>.so (bionic-linked)
-      -> libhybris loads /vendor/lib64/egl/libGLESv2_<vendor>.so (bionic-linked)
+      -> libhybris loads /system/lib64/libEGL.so (Android's loader, bionic-linked)
+        -> which loads /vendor/lib64/egl/lib{EGL,GLESv2}_<vendor>.so in the sphal namespace
 ```
+
+**Library search order.** The hybris linker takes the `system` section
+of the linker config (it poses as `/system/bin/app_process64`), and
+`--with-default-hybris-ld-library-path` in `scripts/build-libhybris.sh`
+becomes the default namespace's `LD_LIBRARY_PATH`, searched *before*
+its config paths. It must start with `/system/lib64`: vendor-first made
+system libs (`libEGL`, `libgraphicsenv`, `libbinder`) bind the vendor
+copies of `libbase`/`libc++`/`libutils`, which lack newer symbols when
+vendor is older than system. On a OnePlus 13 (CPH2653, Android 16),
+`libgraphicsenv` then failed on `android::base::Join<std::vector<std::string>&, char>`
+and every GL client segfaulted. The vendor driver still gets the
+vendor copies via sphal; a GL process maps both sets, like a real app.
+Override at runtime with `HYBRIS_LD_LIBRARY_PATH` to experiment.
 
 ### libhybris on Stock (Unpatched) Android (SOLVED 2026-03-31)
 
