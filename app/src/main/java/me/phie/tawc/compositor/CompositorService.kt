@@ -254,7 +254,7 @@ class CompositorService : Service() {
         val liveActivities = activities.values.mapNotNull { it.get() }
         activities.clear()
         for (activity in liveActivities) {
-            activity.finishAndRemoveTask()
+            activity.finishFromCompositor()
         }
     }
 

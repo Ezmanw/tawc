@@ -482,7 +482,7 @@ object NativeBridge {
             synchronized(pendingFinishActivities) {
                 pendingFinishActivities.remove(activityId)
             }
-            activity.finishAndRemoveTask()
+            activity.finishFromCompositor()
         }
     }
 

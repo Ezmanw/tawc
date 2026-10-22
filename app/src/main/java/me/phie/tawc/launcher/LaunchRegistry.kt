@@ -48,6 +48,13 @@ sealed interface LaunchState {
 
     /** The window is on screen and the splash gone. */
     data object Shown : LaunchState
+
+    /** The window closed soon after it showed: splash back up while the
+     *  exit code decides between the log ([Exited]) and [Closed]. */
+    data object Closing : LaunchState
+
+    /** Closed cleanly after [Closing]: close the task. */
+    data object Closed : LaunchState
 }
 
 sealed interface LaunchEvent {
@@ -59,6 +66,10 @@ sealed interface LaunchEvent {
     data object GraceOver : LaunchEvent
     data object Matched : LaunchEvent
     data object Shown : LaunchEvent
+    /** The host's window went away; [early]: within [LaunchRegistry.CRASH_WINDOW_MS]
+     *  of matching. [exitCode]: the program's, if it already exited. */
+    data class WindowClosed(val early: Boolean, val exitCode: Int?) : LaunchEvent
+    data object ClosingOver : LaunchEvent
 }
 
 /** The launch state machine. Pure; [LaunchRegistry] runs its timers. */
@@ -67,6 +78,7 @@ internal fun reduce(state: LaunchState, event: LaunchEvent): LaunchState {
     val waiting = state == LaunchState.Waiting || state == LaunchState.Handoff
     return when (event) {
         is LaunchEvent.Exited -> when {
+            state == LaunchState.Closing -> if (event.code != 0) LaunchState.Exited(event.code) else LaunchState.Closed
             // A launcher script that backgrounds the real program exits 0
             // with the program still in its session: keep waiting.
             event.code == 0 && event.sessionAlive &&
@@ -81,6 +93,13 @@ internal fun reduce(state: LaunchState, event: LaunchEvent): LaunchState {
         LaunchEvent.GraceOver -> if (state == LaunchState.Handoff) LaunchState.Quit else state
         LaunchEvent.Matched -> if (waiting || showingLog) LaunchState.Matched else state
         LaunchEvent.Shown -> if (waiting || showingLog || state == LaunchState.Matched) LaunchState.Shown else state
+        is LaunchEvent.WindowClosed -> when {
+            !event.early || (state != LaunchState.Matched && state != LaunchState.Shown) -> state
+            event.exitCode == null -> LaunchState.Closing
+            event.exitCode != 0 -> LaunchState.Exited(event.exitCode)
+            else -> LaunchState.Closed
+        }
+        LaunchEvent.ClosingOver -> if (state == LaunchState.Closing) LaunchState.Closed else state
     }
 }
 
@@ -114,16 +133,27 @@ class Launch internal constructor(
     internal var reserved = false
     internal var released = false
     internal var timer: Job? = null
+    /** Main thread only. */
+    internal var exitCode: Int? = null
+    /** Uptime of the window match; 0 before. */
+    @Volatile internal var matchedAt = 0L
 
     internal fun setState(state: LaunchState) {
         _state.value = state
     }
 
-    /** One line of the program's stdout/stderr. Kept until a window
-     *  matches; after that the output is drained and dropped. */
+    /** One line of the program's stdout/stderr. Kept until
+     *  [LaunchRegistry.CRASH_WINDOW_MS] after a window matches, in case
+     *  it closes again at once; after that drained and dropped. */
     fun appendLog(line: String) {
+        if (released) return
         val s = _state.value
-        if (released || s == LaunchState.Matched || s == LaunchState.Shown) return
+        if ((s == LaunchState.Matched || s == LaunchState.Shown) &&
+            SystemClock.uptimeMillis() - matchedAt > LaunchRegistry.CRASH_WINDOW_MS
+        ) {
+            dropLog()
+            return
+        }
         synchronized(log) {
             log.addLast(line)
             logBytes += line.length + 1
@@ -160,6 +190,11 @@ object LaunchRegistry {
     /** Exit 0 with no window: wait this long for a handed-off one. */
     private const val GRACE_MS = 5_000L
     private const val RUNNING_WAIT_MS = 5_000L
+    /** A window closing this soon after matching may be a crash: wait
+     *  for the exit code and show the log if it isn't 0. */
+    const val CRASH_WINDOW_MS = 10_000L
+    /** [LaunchState.Closing]: how long to wait for that exit code. */
+    private const val CLOSING_WAIT_MS = 3_000L
 
     private val launches = ConcurrentHashMap<String, Launch>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -183,15 +218,34 @@ object LaunchRegistry {
 
     /** Feed [event] to [id]'s state machine. Any thread. */
     fun dispatch(id: String, event: LaunchEvent) {
-        scope.launch {
-            val launch = launches[id] ?: return@launch
-            val old = launch.state.value
-            val new = reduce(old, event)
-            if (new == old) return@launch
-            launch.setState(new)
-            if (new == LaunchState.Matched || new == LaunchState.Shown) launch.dropLog()
-            schedule(launch, new)
+        scope.launch { launches[id]?.let { apply(it, event) } }
+    }
+
+    /**
+     * The splash host's window went away and the compositor wants the
+     * task finished. True if the splash takes over closing it: soon after
+     * the window showed, the exit code decides whether the log comes back
+     * up instead. Main thread.
+     */
+    fun windowClosed(id: String): Boolean {
+        val launch = launches[id] ?: return false
+        val early = launch.matchedAt != 0L &&
+            SystemClock.uptimeMillis() - launch.matchedAt <= CRASH_WINDOW_MS
+        return apply(launch, LaunchEvent.WindowClosed(early, launch.exitCode))
+    }
+
+    /** Main thread. Whether the state changed. */
+    private fun apply(launch: Launch, event: LaunchEvent): Boolean {
+        if (event is LaunchEvent.Exited) launch.exitCode = event.code
+        val old = launch.state.value
+        val new = reduce(old, event)
+        if (new == old) return false
+        if (launch.matchedAt == 0L && (new == LaunchState.Matched || new == LaunchState.Shown)) {
+            launch.matchedAt = SystemClock.uptimeMillis()
         }
+        launch.setState(new)
+        schedule(launch, new)
+        return true
     }
 
     private fun schedule(launch: Launch, state: LaunchState) {
@@ -199,6 +253,7 @@ object LaunchRegistry {
         val (delayMs, event) = when (state) {
             LaunchState.Waiting -> launch.timeoutMs to LaunchEvent.TimeoutOver
             LaunchState.Handoff -> GRACE_MS to LaunchEvent.GraceOver
+            LaunchState.Closing -> CLOSING_WAIT_MS to LaunchEvent.ClosingOver
             else -> return
         }
         launch.timer = scope.launch {

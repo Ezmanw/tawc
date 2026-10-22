@@ -173,7 +173,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         launch.attached = true
         launch.taskId = taskId
         applyTaskDescription(launch.name, launch.iconPath)
-        if (launch.state.value == LaunchState.Shown) return
         val splash = LaunchSplash(this, rootView, launch) { finishAndRemoveTask() }
         rootView.addView(splash.view, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -181,6 +180,19 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         ))
         splash.bind(metadataScope)
         launchSplash = splash
+    }
+
+    /** The compositor finished this host, or stopped. A launch splash
+     *  may keep the task to show why the window went ([LaunchRegistry.windowClosed]);
+     *  it needs no compositor for that. */
+    fun finishFromCompositor() {
+        val id = launchId
+        if (launchSplash != null && id != null) {
+            if (LaunchRegistry.windowClosed(id)) return
+            val state = LaunchRegistry.get(id)?.state?.value
+            if (state == LaunchState.Closing || state is LaunchState.Exited) return
+        }
+        finishAndRemoveTask()
     }
 
     /** Back while the splash or its log is up closes the task. */

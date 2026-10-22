@@ -99,8 +99,8 @@ Terminal entries and built-ins are unchanged (terminal tabs).
 **Record** (`LaunchRegistry`, Kotlin, process-wide): `launchId`
 (`launch-<random>`, also the host's `ActivityId`), desktop id, name,
 icon path, terminal flag, and a capped output ring (1000 lines /
-128 KiB) for the log view. Output is dropped once a window matches;
-the pipe keeps draining. States (`reduce`, pure, `LaunchStateTest`):
+128 KiB) for the log view. Output is kept for 10 s after a window
+matches (`CRASH_WINDOW_MS`), then dropped; the pipe keeps draining. States (`reduce`, pure, `LaunchStateTest`):
 
 | State | Means | Splash shows |
 |---|---|---|
@@ -112,6 +112,18 @@ the pipe keeps draining. States (`reduce`, pure, `LaunchStateTest`):
 | Quit | Handoff grace ran out | closes with a toast |
 | Detached | no host could be reserved | closes; the window opens as without a splash |
 | Matched → Shown | window assigned → first frame rendered | fades out |
+| Closing | window closed within 10 s of matching; waits ≤3 s for the exit code | icon + name again |
+| Exited(code) after Closing | non-zero exit (e.g. foot with no fonts) | log, "exited with code N" |
+| Closed | Closing ended with exit 0, or no exit code in time | closes |
+
+The compositor finishes a host whose last window goes away
+(`finish_host` → `NativeBridge.finishActivity`); a launch host routes
+that through `CompositorActivity.finishFromCompositor`, and
+`LaunchRegistry.windowClosed` decides whether the splash keeps the task.
+The compositor's idle stop (no clients left) goes through the same
+check, so a Closing/Exited splash outlives it.
+The exit code is remembered even when it arrives while Shown, since
+exit and window teardown race.
 
 Exit 0 with processes left in the session (a launcher script that
 backgrounds the program) keeps Waiting: `LaunchRegistry.sessionAlive`

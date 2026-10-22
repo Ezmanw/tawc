@@ -32,7 +32,8 @@ import me.phie.tawc.ui.tonalButton
 /**
  * The launch splash over a [CompositorActivity]'s SurfaceView: the entry's
  * icon and name while the program starts, its output log with a Close
- * button if it fails, gone once its window renders. A plain Android view,
+ * button if it fails, gone once its window renders. It comes back if that
+ * window closes again at once ([LaunchState.Closing]). A plain Android view,
  * so the compositor never draws it. White on light mode, black on dark;
  * [backdrop] (behind the system bars) matches it while the splash is up.
  * See notes/launcher.md ("Launch splash").
@@ -117,7 +118,14 @@ internal class LaunchSplash(
             addView(splash, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             addView(logPanel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
-        setBars(bgColor, light)
+        if (launch.state.value == LaunchState.Shown) {
+            // Recreated over a live window: stay hidden until needed.
+            active = false
+            view.visibility = View.GONE
+            setBars(Color.BLACK, false)
+        } else {
+            setBars(bgColor, light)
+        }
     }
 
     private fun setBars(color: Int, lightIcons: Boolean) {
@@ -156,6 +164,7 @@ internal class LaunchSplash(
         }
         when {
             failure != null -> {
+                show()
                 status.text = failure
                 splash.visibility = View.GONE
                 logPanel.visibility = View.VISIBLE
@@ -170,7 +179,8 @@ internal class LaunchSplash(
                 ).show()
                 close()
             }
-            state == LaunchState.Detached -> close()
+            state == LaunchState.Detached || state == LaunchState.Closed -> close()
+            state == LaunchState.Closing -> show()
         }
     }
 
@@ -178,6 +188,15 @@ internal class LaunchSplash(
         val atEnd = !logScroll.canScrollVertically(1)
         logText.text = launch.logText().ifEmpty { activity.getString(R.string.launch_splash_no_output) }
         if (atEnd) logScroll.post { logScroll.scrollTo(0, logText.height) }
+    }
+
+    private fun show() {
+        if (active) return
+        active = true
+        setBars(bgColor, light)
+        view.animate().cancel()
+        view.alpha = 1f
+        view.visibility = View.VISIBLE
     }
 
     private fun hide() {
