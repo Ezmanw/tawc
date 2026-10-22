@@ -36,7 +36,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.PointerEmulation
 import me.phie.tawc.R
 import me.phie.tawc.Settings
@@ -45,7 +44,8 @@ import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.ui.Scaffold
 import me.phie.tawc.ui.buildChildScreen
-import me.phie.tawc.ui.graphicsBackendGroup
+import me.phie.tawc.ui.GraphicsOverride
+import me.phie.tawc.ui.OverrideBlock
 import me.phie.tawc.ui.plainIconButton
 import me.phie.tawc.ui.pointerEmulationGroup
 import me.phie.tawc.ui.primaryButton
@@ -101,7 +101,7 @@ class EntryEditorActivity : AppCompatActivity() {
     private lateinit var iconField: EditText
     private lateinit var iconPreview: ImageView
     private lateinit var terminalCheckbox: CheckBox
-    private lateinit var graphicsOverride: CheckBox
+    private lateinit var graphicsOverride: GraphicsOverride
     private lateinit var pointerOverride: CheckBox
     private lateinit var envRows: LinearLayout
     private val envFields = ArrayList<Pair<EditText, EditText>>()
@@ -115,8 +115,7 @@ class EntryEditorActivity : AppCompatActivity() {
     private var iconFile: String? = null
     private var pendingIcon: IconImport.Result? = null
 
-    /** The radio picks, meaningful while the override box is checked. */
-    private var graphicsChoice: GraphicsBackend = GraphicsBackend.DEFAULT
+    /** The radio pick, meaningful while the override box is checked. */
     private var pointerChoice: PointerEmulation = PointerEmulation.DEFAULT
 
     /** The form as loaded; the dirty check compares against it. */
@@ -205,12 +204,9 @@ class EntryEditorActivity : AppCompatActivity() {
         terminalRow.addView(terminalCheckbox, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         addReset(terminalRow, "terminal") { terminalCheckbox.isChecked = scannedEntry!!.packagedTerminal }
         form.addView(terminalRow, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        graphicsOverride = GraphicsOverride(this, initial.graphics) { revalidate() }
+        form.addView(graphicsOverride.view, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
         // Unchecked = the global setting; checking starts from it.
-        graphicsChoice = initial.graphics ?: Settings.graphicsBackend
-        graphicsOverride = addOverrideBlock(
-            form, R.string.editor_override_graphics, initial.graphics != null, pad / 2,
-            graphicsBackendGroup(graphicsChoice) { graphicsChoice = it; revalidate() },
-        )
         pointerChoice = initial.pointer ?: Settings.pointerEmulation
         pointerOverride = addOverrideBlock(
             form, R.string.editor_override_pointer_emulation, initial.pointer != null, pad,
@@ -254,29 +250,17 @@ class EntryEditorActivity : AppCompatActivity() {
         terminal = terminalCheckbox.isChecked,
         env = envFields.map { (k, v) -> k.text.toString().trim() to v.text.toString() }
             .filter { (k, v) -> k.isNotEmpty() || v.isNotEmpty() },
-        graphics = graphicsChoice.takeIf { graphicsOverride.isChecked },
+        graphics = graphicsOverride.value,
         pointer = pointerChoice.takeIf { pointerOverride.isChecked },
     )
 
     private fun isDirty() = initial.let { it != null && it != form() }
 
-    /** Checkbox + [group] (shown while checked) as one block, so its
-     *  bottom margin holds with the group hidden. Returns the checkbox. */
+    /** An [OverrideBlock] added to [form]. Returns its checkbox. */
     private fun addOverrideBlock(form: LinearLayout, labelRes: Int, checked: Boolean, margin: Int, group: View): CheckBox {
-        group.visibility = if (checked) View.VISIBLE else View.GONE
-        val box = CheckBox(this).apply {
-            text = getString(labelRes)
-            isChecked = checked
-            setOnCheckedChangeListener { _, on ->
-                group.visibility = if (on) View.VISIBLE else View.GONE
-                revalidate()
-            }
-        }
-        val block = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        block.addView(box, verticalLp(WRAP_CONTENT, WRAP_CONTENT))
-        block.addView(group, verticalLp(MATCH_PARENT, WRAP_CONTENT))
-        form.addView(block, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = margin))
-        return box
+        val block = OverrideBlock(this, getString(labelRes), checked, group) { revalidate() }
+        form.addView(block.view, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = margin))
+        return block.box
     }
 
     /** A reset control for [field] at the end of [row], shown by

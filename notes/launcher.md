@@ -122,6 +122,13 @@ that through `CompositorActivity.finishFromCompositor`, and
 `LaunchRegistry.windowClosed` decides whether the splash keeps the task.
 The compositor's idle stop (no clients left) goes through the same
 check, so a Closing/Exited splash outlives it.
+
+Exited and Failed panels also offer **Relaunch** under the entry's
+graphics override (`ui/OverrideBlock.kt` `GraphicsOverride`, the same
+block the editor uses). `EntryLauncher.relaunch` stores a changed
+override (`withField(id, "graphics", …)`), re-resolves the entry and
+launches it like a tap; the old task closes. TimedOut gets no Relaunch:
+the program still runs.
 The exit code is remembered even when it arrives while Shown, since
 exit and window teardown race.
 

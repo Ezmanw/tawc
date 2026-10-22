@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.MainActivity
 import me.phie.tawc.PointerEmulation
@@ -101,6 +102,7 @@ object EntryLauncher {
         }
         launchGui(
             appContext,
+            inst.id,
             method,
             InstallationStore(appContext).rootfsDir(inst.id).absolutePath,
             entry,
@@ -109,9 +111,41 @@ object EntryLauncher {
         )
     }
 
+    /**
+     * Relaunch a failed [launch]'s entry from its splash, first storing
+     * [graphics] as the entry's override (null clears it). Errors open
+     * [LaunchErrorActivity], like a stale pin.
+     */
+    fun relaunch(appContext: Context, launch: Launch, graphics: GraphicsBackend?) {
+        LAUNCH_SCOPE.launch {
+            val error = runCatching {
+                val inst = InstallationStore(appContext).load(launch.installId)
+                    ?: return@runCatching appContext.getString(R.string.launcher_installation_not_found, launch.installId)
+                if (graphics != launch.graphics) {
+                    LauncherStore(appContext).update(inst.id) { store, _ ->
+                        store.withField(launch.desktopId, "graphics", graphics?.key)
+                    }
+                }
+                val entry = LauncherEntry.find(appContext, inst, launch.desktopId)
+                    ?: return@runCatching appContext.getString(R.string.shortcut_entry_gone)
+                withContext(Dispatchers.Main) { EntryLauncher.launch(appContext, inst, entry) }
+                null
+            }.getOrElse { it.message ?: it.javaClass.simpleName }
+            if (error != null) {
+                Log.w(TAG, "relaunch ${launch.desktopId}: $error")
+                LaunchErrorActivity.start(
+                    appContext,
+                    appContext.getString(R.string.launcher_launch_failed_title, launch.name),
+                    error,
+                )
+            }
+        }
+    }
+
     /** GUI launch behind a splash; returns its [Launch] (for the dev broker). */
     internal fun launchGui(
         appContext: Context,
+        installId: String,
         method: InstallationMethod,
         rootfs: String,
         entry: LauncherEntry,
@@ -120,7 +154,9 @@ object EntryLauncher {
         pointerEmulation: PointerEmulation? = null,
     ): Launch {
         val name = entry.name.ifEmpty { entry.id }
-        val launch = LaunchRegistry.create(entry.id, name, entry.iconPath, entry.terminal, timeoutMs, pointerEmulation)
+        val launch = LaunchRegistry.create(
+            installId, entry.id, name, entry.iconPath, entry.terminal, graphics, timeoutMs, pointerEmulation,
+        )
         val splash = runCatching { appContext.startActivity(CompositorActivity.launchIntent(appContext, launch.id)) }
             .onFailure { Log.w(TAG, "launch ${entry.id}: no splash: $it") }
             .isSuccess

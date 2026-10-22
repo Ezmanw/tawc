@@ -68,6 +68,7 @@ internal object LauncherActions {
             if (entry.terminal) return ctx.fail("launcher-launch: '$entryId' is a terminal entry")
             val launch = EntryLauncher.launchGui(
                 ctx.appContext,
+                id,
                 method,
                 rootfs,
                 entry,

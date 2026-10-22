@@ -23,16 +23,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.R
 import me.phie.tawc.launcher.IconLoader
 import me.phie.tawc.launcher.Launch
 import me.phie.tawc.launcher.LaunchState
+import me.phie.tawc.ui.GraphicsOverride
 import me.phie.tawc.ui.tonalButton
 
 /**
  * The launch splash over a [CompositorActivity]'s SurfaceView: the entry's
  * icon and name while the program starts, its output log with a Close
- * button if it fails, gone once its window renders. It comes back if that
+ * button if it fails, gone once its window renders. A program that
+ * exited or couldn't start also gets Relaunch, under the entry's graphics
+ * override ([GraphicsOverride], as in the editor). It comes back if that
  * window closes again at once ([LaunchState.Closing]). A plain Android view,
  * so the compositor never draws it. White on light mode, black on dark;
  * [backdrop] (behind the system bars) matches it while the splash is up.
@@ -43,6 +47,7 @@ internal class LaunchSplash(
     private val backdrop: ViewGroup,
     private val launch: Launch,
     private val close: () -> Unit,
+    private val relaunch: (GraphicsBackend?) -> Unit,
 ) {
     val view: FrameLayout
     private val splash: LinearLayout
@@ -51,6 +56,8 @@ internal class LaunchSplash(
     private val status: TextView
     private val logScroll: ScrollView
     private val logText: TextView
+    private val relaunchControls: LinearLayout
+    private val relaunchButton: View
 
     /** The overlay still covers the window (Back closes the task). */
     var active = true
@@ -96,19 +103,36 @@ internal class LaunchSplash(
         logScroll = ScrollView(activity).apply {
             addView(logText, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
-        // The compositor theme isn't Material; the button needs it.
-        val closeButton = ContextThemeWrapper(activity, R.style.Theme_Tawc)
-            .tonalButton(activity.getString(R.string.launch_splash_close)) { close() }
+        // The compositor theme isn't Material; the widgets need it.
+        val themed = ContextThemeWrapper(activity, R.style.Theme_Tawc)
+        val graphics = GraphicsOverride(themed, launch.graphics)
+        relaunchControls = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, dp(12), 0, 0)
+            addView(TextView(themed).apply {
+                text = activity.getString(R.string.launch_splash_cpu_hint)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(graphics.view, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+        relaunchButton = themed.tonalButton(activity.getString(R.string.launch_splash_relaunch)) {
+            relaunch(graphics.value)
+        }.apply { visibility = View.GONE }
+        val buttons = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            addView(relaunchButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(8) })
+            addView(themed.tonalButton(activity.getString(R.string.launch_splash_close)) { close() })
+        }
         logPanel = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
             visibility = View.GONE
             addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(logScroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-            addView(closeButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                gravity = Gravity.END
-                topMargin = dp(12)
-            })
+            addView(relaunchControls, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
         }
 
         view = FrameLayout(activity).apply {
@@ -166,6 +190,10 @@ internal class LaunchSplash(
             failure != null -> {
                 show()
                 status.text = failure
+                // A timed-out program still runs; relaunching would double it.
+                val canRelaunch = state != LaunchState.TimedOut
+                relaunchControls.visibility = if (canRelaunch) View.VISIBLE else View.GONE
+                relaunchButton.visibility = if (canRelaunch) View.VISIBLE else View.GONE
                 splash.visibility = View.GONE
                 logPanel.visibility = View.VISIBLE
                 showLog()

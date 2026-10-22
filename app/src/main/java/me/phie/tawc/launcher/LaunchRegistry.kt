@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.PointerEmulation
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.compositor.NativeBridge
@@ -107,10 +108,13 @@ internal fun reduce(state: LaunchState, event: LaunchEvent): LaunchState {
 class Launch internal constructor(
     /** Also the splash host's `ActivityId`. */
     val id: String,
+    val installId: String,
     val desktopId: String,
     val name: String,
     val iconPath: String,
     val terminal: Boolean,
+    /** The entry's graphics override at launch, or null. */
+    val graphics: GraphicsBackend?,
     internal val timeoutMs: Long,
     /** The entry's override, handed to the compositor at [LaunchRegistry.reserve]. */
     val pointerEmulation: PointerEmulation? = null,
@@ -202,15 +206,17 @@ object LaunchRegistry {
     fun get(id: String): Launch? = launches[id]
 
     fun create(
+        installId: String,
         desktopId: String,
         name: String,
         iconPath: String,
         terminal: Boolean,
+        graphics: GraphicsBackend?,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         pointerEmulation: PointerEmulation? = null,
     ): Launch {
         val id = "launch-%016x".format(Random.nextLong())
-        val launch = Launch(id, desktopId, name, iconPath, terminal, timeoutMs, pointerEmulation)
+        val launch = Launch(id, installId, desktopId, name, iconPath, terminal, graphics, timeoutMs, pointerEmulation)
         launches[id] = launch
         scope.launch { schedule(launch, LaunchState.Waiting) }
         return launch

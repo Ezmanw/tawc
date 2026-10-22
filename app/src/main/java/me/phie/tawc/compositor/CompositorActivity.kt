@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.phie.tawc.RefreshRate
 import me.phie.tawc.Settings
+import me.phie.tawc.launcher.EntryLauncher
 import me.phie.tawc.launcher.Launch
 import me.phie.tawc.launcher.LaunchRegistry
 import me.phie.tawc.launcher.LaunchState
@@ -173,7 +174,10 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         launch.attached = true
         launch.taskId = taskId
         applyTaskDescription(launch.name, launch.iconPath)
-        val splash = LaunchSplash(this, rootView, launch) { finishAndRemoveTask() }
+        val splash = LaunchSplash(this, rootView, launch, close = { finishAndRemoveTask() }) { graphics ->
+            EntryLauncher.relaunch(applicationContext, launch, graphics)
+            finishAndRemoveTask()
+        }
         rootView.addView(splash.view, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT,
