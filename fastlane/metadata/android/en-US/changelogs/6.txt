@@ -1,0 +1,6 @@
+Fixes:
+
+- GPU graphics: libhybris resolves Android libraries through the device's own linker config
+- When an app fails, the error screen offers Relaunch with a different graphics driver, e.g. CPU
+- Apps that close right after their window appears now show their log
+- New installs include DejaVu fonts
