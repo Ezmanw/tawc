@@ -105,15 +105,19 @@ App (glibc-linked)
 **Library search order.** The hybris linker takes the `system` section
 of the linker config (it poses as `/system/bin/app_process64`), and
 `--with-default-hybris-ld-library-path` in `scripts/build-libhybris.sh`
-becomes the default namespace's `LD_LIBRARY_PATH`, searched *before*
-its config paths. It must start with `/system/lib64`: vendor-first made
-system libs (`libEGL`, `libgraphicsenv`, `libbinder`) bind the vendor
-copies of `libbase`/`libc++`/`libutils`, which lack newer symbols when
-vendor is older than system. On a OnePlus 13 (CPH2653, Android 16),
-`libgraphicsenv` then failed on `android::base::Join<std::vector<std::string>&, char>`
-and every GL client segfaulted. The vendor driver still gets the
-vendor copies via sphal; a GL process maps both sets, like a real app.
-Override at runtime with `HYBRIS_LD_LIBRARY_PATH` to experiment.
+is empty, so every lookup goes through the device's own linker config,
+as in a real app process. libhybris only names system libs (`libEGL`,
+`libGLESv2`, `libvulkan`, `libnativewindow`, `libcutils`); the vendor
+driver is loaded by Android's `libEGL`/`libvulkan` into sphal. Any path
+there becomes the default namespace's `LD_LIBRARY_PATH`, searched
+*before* the config, and overrides the device's layout. A vendor-first
+list made system libs bind vendor `libbase`/`libc++`/`libutils`, which
+lack newer symbols when vendor is older than system: on a OnePlus 13
+(CPH2653, Android 16) `libgraphicsenv` failed on
+`android::base::Join<std::vector<std::string>&, char>` and every GL
+client segfaulted. Set `HYBRIS_LD_LIBRARY_PATH` at runtime to experiment.
+Vendor libs a real app reaches through `public.libraries.txt` (e.g.
+`libOpenCL.so`) aren't visible this way; tawc doesn't use them.
 
 ### libhybris on Stock (Unpatched) Android (SOLVED 2026-03-31)
 

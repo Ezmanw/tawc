@@ -258,13 +258,11 @@ CONFIGURE_ARGS=(
     --enable-adreno-quirks
     --enable-mali-quirks
     --enable-property-cache
-    # System first: these are the default namespace's LD_LIBRARY_PATH,
-    # searched before its config paths, and system libs (libEGL,
-    # libgraphicsenv, ...) must bind system libbase/libc++/libutils.
-    # Vendor-first bound the vendor copies, which lack newer symbols when
-    # vendor is older than system (OnePlus 13, Android 16). The vendor
-    # driver gets vendor copies through the sphal namespace either way.
-    --with-default-hybris-ld-library-path=/system/lib64:/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64
+    # Empty: resolve everything through the device's linker config, like
+    # a real app process. Any path here is the default namespace's
+    # LD_LIBRARY_PATH, searched before the config, and overrides the
+    # device's namespace layout (see notes/gpu-strategy.md).
+    --with-default-hybris-ld-library-path=
 )
 
 # The build tree is in-tree (`deps/libhybris/hybris/`), so leftover
