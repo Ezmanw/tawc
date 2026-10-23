@@ -76,24 +76,32 @@ When asked to prep a release:
    non-determinism crept in — find it before tagging, not after F-Droid
    refuses to publish.
 8. Tag `vN` (annotated) on the release commit. Do not push.
-9. Hand off: print the human steps below with the concrete version filled
-   in, the path to the unsigned APK, and the drafted notes (e.g. as a
-   `--notes-file` in scratch or inline for copy/paste).
+9. Hand off: `sudo` the unsigned APK into the signing user's handoff
+   directory and give it to that user:
 
-Signing cannot be run by the agent: the keystore lives in a different user account where Claude does not run.
+       sudo sh -c 'mv app/build/outputs/apk/release/me.phie.tawc_N-unsigned.apk /home/code/tawc/ && chown code:code /home/code/tawc/me.phie.tawc_N-unsigned.apk'
+
+   Then print the human steps below with the concrete version filled in
+   and the drafted notes (a `--notes-file` in scratch, or inline). After
+   signing, fetch `tawc-vN.apk` back with `sudo` for the remaining steps
+   (step 2's reproduce check, `gh release create`).
+
+Signing cannot be run by the agent: the keystore lives in a different
+user account (`code`) where Claude does not run. Use `sudo` only for these
+two transfers; each call prompts the user.
 
 ## Publish steps (human, as the key-owning user)
 
 1. Sign the container's APK — not a fresh local build, which would not
-   reproduce:
+   reproduce. From `/home/code/tawc` (the signing user's checkout), where
+   the agent left it:
 
-       scripts/build-release-apk.sh --apk app/build/outputs/apk/release/me.phie.tawc_N-unsigned.apk
+       scripts/build-release-apk.sh --apk me.phie.tawc_N-unsigned.apk
 
    It checks the APK is already aligned, signs it with v2/v3 only, and
    gates on `apksigcopier compare`, which is the same check F-Droid runs.
-   The signed `tawc-vN.apk` lands **next to the APK you passed in** — so
-   handing the unsigned APK over in a shared directory and signing it
-   there works without a checkout path in the middle. Needs
+   The signed `tawc-vN.apk` lands next to the APK passed in, i.e. in
+   `/home/code/tawc/`, where the agent fetches it with `sudo`. Needs
    `apksigcopier` and build-tools 35+.
 2. Optionally run F-Droid's own verification end to end before anything is
    public (no key needed, so the agent can do this given the signed APK):
@@ -107,11 +115,7 @@ Signing cannot be run by the agent: the keystore lives in a different user accou
    The asset name must be exactly `tawc-vN.apk` — the recipe's `Binaries:`
    URL pattern depends on it. **Never replace a published asset:** F-Droid
    pins the binary it verified, and swapping it out breaks that pin.
-6. Close out any upstream issues the release fixes. Pending:
-   [#12](https://github.com/wmww/tawc/issues/12) (`mkdir /test` →
-   Permission denied under a 0555 `/`) — fixed by tawcroot's lazy
-   CAP_DAC_OVERRIDE emulation; the interim workaround for anyone on an
-   older build is `chmod 755 /` inside the guest.
+6. Close out any upstream issues the release fixes.
 
 ## Debuggability over size
 
