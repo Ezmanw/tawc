@@ -65,8 +65,9 @@ import java.io.File
  * compositor's policy, and [launchIntent] for a launcher tap, which shows
  * a [LaunchSplash] until the program's window maps into this host.
  */
-class CompositorActivity : Activity(), SurfaceHolder.Callback {
-    private lateinit var rootView: FrameLayout
+open class CompositorActivity : Activity(), SurfaceHolder.Callback {
+    /** The view holding the compositor surface; an embedding host may resize it (Foldiux fork). */
+    protected lateinit var rootView: FrameLayout
     private lateinit var surfaceView: SurfaceView
 
     /** Last mouse button mask seen from a mouse-source MotionEvent. Android
@@ -82,7 +83,8 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         )
     }
     /** Set in onCreate from intent.data (a `tawc://activity/<id>` URI). */
-    private lateinit var activityId: String
+    lateinit var activityId: String
+        private set
     /** Set when this task was opened by a launcher tap ([launchIntent]). */
     private var launchId: String? = null
     private var launchSplash: LaunchSplash? = null
@@ -1026,10 +1028,13 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         private const val TASK_ICON_SIZE_DP = 96
         private const val EXTRA_LAUNCH_ID = "launchId"
 
+        /** The Activity class that hosts windows; an embedding app may substitute a subclass. */
+        @JvmStatic var hostClass: Class<out CompositorActivity> = CompositorActivity::class.java
+
         /** A new task for a launcher tap: the splash, then the program's
          *  first window in the same task ([LaunchRegistry]). */
         fun launchIntent(context: Context, launchId: String): Intent =
-            Intent(context, CompositorActivity::class.java).apply {
+            Intent(context, hostClass).apply {
                 action = Intent.ACTION_VIEW
                 data = Uri.parse("tawc://activity/$launchId")
                 putExtra(EXTRA_LAUNCH_ID, launchId)

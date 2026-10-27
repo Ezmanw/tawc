@@ -1,5 +1,6 @@
 plugins {
-    id("com.android.application")
+    // Foldiux fork: built as a library that Foldiux embeds (see FOLDIUX.md).
+    id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
 
@@ -109,12 +110,10 @@ android {
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId = "me.phie.tawc"
         minSdk = 29
-        targetSdk = 36
         // Plain release counter, single source of truth; see notes/release.md.
-        versionName = "6"
-        versionCode = versionName!!.toInt()
+        buildConfigField("String", "VERSION_NAME", "\"6-foldiux\"")
+        consumerProguardFiles("proguard-rules.pro")
         ndk {
             abiFilters.addAll(tawcAbis)
         }
@@ -122,7 +121,6 @@ android {
 
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = tawcAppIdSuffix
             // LogScreenActivity is exported in debug only — the export
             // exists so `am start … --es operationId` from adb can
             // attach to a running op; release keeps it app-internal.
@@ -145,12 +143,8 @@ android {
             // turns obfuscation off, so crash traces stay readable
             // without mapping.txt. Native libs still ship unstripped —
             // see packaging {} below.
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
+            // The host app (Foldiux) shrinks; proguard-rules.pro ships as consumer rules.
+            isMinifyEnabled = false
             buildConfigField("boolean", "METHOD_TAWCROOT_ENABLED", "${"tawcroot" in releaseMethods}")
             buildConfigField("boolean", "METHOD_PROOT_ENABLED",    "${"proot" in releaseMethods}")
             buildConfigField("boolean", "METHOD_CHROOT_ENABLED",   "${"chroot" in releaseMethods}")

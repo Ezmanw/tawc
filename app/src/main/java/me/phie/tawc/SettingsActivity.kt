@@ -252,7 +252,7 @@ class SettingsActivity : AppCompatActivity() {
             TextView(this).apply {
                 text = getString(
                     R.string.settings_about_detail,
-                    BuildConfig.APPLICATION_ID,
+                    packageName,
                     BuildConfig.VERSION_NAME,
                 )
                 textSize = 14f

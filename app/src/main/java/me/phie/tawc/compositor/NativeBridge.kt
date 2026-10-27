@@ -420,7 +420,7 @@ object NativeBridge {
                 Log.e(TAG, "spawnActivity($activityId): no appContext yet")
                 return@post
             }
-            val intent = Intent(ctx, CompositorActivity::class.java).apply {
+            val intent = Intent(ctx, CompositorActivity.hostClass).apply {
                 action = Intent.ACTION_VIEW
                 data = "tawc://activity/$activityId".toUri()
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
